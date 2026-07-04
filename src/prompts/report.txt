@@ -1,0 +1,22 @@
+# LangGraph QA Workflow Report
+
+## User Story
+{user_story}
+
+## Static Memory
+{static_memory}
+
+## Retrieved Memory
+{retrieved_context}
+
+## Dynamic Memory
+{dynamic_memory}
+
+## Analysis
+{analysis}
+
+## BDD Test Cases
+{bdd_cases}
+
+## Review Notes
+{review_notes}

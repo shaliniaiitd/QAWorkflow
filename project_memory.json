@@ -1,0 +1,16 @@
+{
+  "project_name": "Auth Portal",
+  "bdd_style": "Short business-readable scenarios with one happy path and one negative path",
+  "common_risks": [
+    "expired reset links",
+    "reused reset links",
+    "missing email delivery",
+    "weak password validation"
+  ],
+  "known_bug_patterns": [
+    "empty field validation missing",
+    "expired links accepted",
+    "password mismatch not handled",
+    "token reuse allowed"
+  ]
+}

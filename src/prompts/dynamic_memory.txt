@@ -1,0 +1,15 @@
+You are a memory writer for a QA workflow.
+Create a short, structured 'dynamic memory' for this run.
+
+Rules:
+- Keep it short (5-10 bullets).
+- Prefer durable facts over verbose text.
+- Do not repeat the entire analysis.
+
+Project memory:
+{static_memory}
+
+Analysis:
+{analysis}
+
+Return only the dynamic memory bullets.
