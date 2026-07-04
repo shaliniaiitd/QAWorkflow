@@ -11,13 +11,13 @@ can be right, so it's the first thing worth being confident about.
 The metric: Hit@k. For each (query, expected_section) test case, run
 retrieval and check whether a chunk from expected_section appears
 anywhere in the top_k results. This is a standard, simple retrieval
-metric -- easy to explain, easy to defend in an interview.
+metric.
 
 How this could grow later (worth knowing the names, not required to build):
 - Precision@k / Recall@k if you had multiple relevant chunks per query.
 - MRR (Mean Reciprocal Rank) if *ranking* position matters, not just
   presence in top_k.
-- A generation-level eval layer (e.g. using RAGAS, or reusing your own
+- A generation-level eval layer (e.g. using RAGAS, or reusing 
   LLM-based evaluation rubric from the EPAM Uber project) that checks
   whether the *final answer* is faithful to the retrieved context, not
   just whether retrieval found the right section.
