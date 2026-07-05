@@ -1,0 +1,159 @@
+# QA Workflow — RAG + MCP
+
+A small, real RAG pipeline: portfolio site (shaliniaiitd.github.io)
+content -> generated user stories -> chunked, embedded, and indexed in a
+vector DB with section metadata -> retrieval you can inspect and evaluate
+-> all of it also exposed as MCP tools.
+
+Every script and tool talks to the
+same `src/` modules, so nothing is duplicated between "run it from the
+CLI" and "call it as an MCP tool."
+
+
+`data/portfolio_content.json` is a snapshot of that content, grouped by
+section
+If the site changes, this file needs update(small
+`scripts/fetch_portfolio.py` using `requests` + `BeautifulSoup` ).
+
+## Pipeline, in order
+
+```
+data/portfolio_content.json
+        |
+        v
+scripts/generate_user_stories.py   --> user_stories/<section>/story_N.md
+        |                               (LLM-generated, grounded in real content,
+        |                                YAML frontmatter: id, section, source)
+        v
+seed_vector_db.py                  --> reads user_stories/**/*.md dynamically,
+        |                               chunks each (src/utils/chunking.py),
+        |                               embeds + upserts (src/utils/vector_store.py)
+        v
+   Chroma vector DB (chroma_db/, local, persistent)
+        |
+        +--> check_retrieval.py    (inspect what gets retrieved, with scores)
+        +--> rag_eval.py           (Hit@k across a fixed test set)
+        +--> src/workflow.py's retrieve_memory node (feeds analyze_story)
+```
+
+##  files in this delivery
+
+| File | What it does |
+|---|---|
+| `data/portfolio_content.json` | Real portfolio content, grouped by section |
+| `scripts/generate_user_stories.py` | LLM generates stories from portfolio content, writes files |
+| `src/utils/chunking.py` | `chunk_text(text, chunk_size, overlap)`
+| `src/utils/vector_store.py` | Chroma + Ollama embeddings; upsert-safe; metadata-aware; **written for this project since it wasn't shared — see note below** |
+| `seed_vector_db.py` | Dynamically seeds from `user_stories/`, replaces the seeding half of `run_demo.py` |
+| `check_retrieval.py` | Query the store, see top-k results with distances and metadata |
+| `rag_eval.py` | Hit@k retrieval evaluation against a fixed, grounded test set |
+| `mcp_server.py` | Now 12 tools: the original 6 QA workflow nodes + `add_story_to_vector_store`, `generate_user_stories`, `reindex_vector_db`, `search_portfolio`, `run_rag_eval`, `run_full_qa_workflow` |
+| `src/workflow.py` | Moved to `src/` to match what `run_demo.py` already imports (`from src.workflow import ...`) |
+
+**Note on `vector_store.py`:** you referenced this module (`from src.utils.vector_store import ...`) but never shared its contents, so I implemented it — Chroma for local persistent storage, `OllamaEmbeddings` (model: `nomic-embed-text`) to stay on your existing local Ollama stack with no new API keys. If you already have a working version with a different backend (e.g. FAISS, or OpenAI embeddings), keep yours — just make sure it exposes `add_story_to_db(id, text, metadata=None)` as an upsert and add a `retrieve_similar_chunks(query, top_k, where=None)` returning `{id, text, metadata, distance}` dicts, since `check_retrieval.py` and `rag_eval.py` depend on that richer function.
+
+## Setup
+
+```bash
+pip install -r requirements.txt
+ollama pull qwen2.5-coder:0.5b      # chat model (src/workflow.py)
+ollama pull nomic-embed-text        # embedding model (src/utils/vector_store.py)
+```
+
+## Running it, step by step
+
+```bash
+# 1. Generate stories from your real portfolio content
+python scripts/generate_user_stories.py
+python scripts/generate_user_stories.py --section projects --count 3   # one section, more stories
+
+# 2. Seed (or re-seed -- it's an upsert, always safe) the vector DB
+python seed_vector_db.py
+python seed_vector_db.py --chunk-size 40 --overlap 8   # try different chunking
+
+# 3. See what retrieval actually finds
+python check_retrieval.py "large scale data validation experience"
+python check_retrieval.py "generative AI certifications" --top-k 5
+python check_retrieval.py   # runs a few built-in demo queries
+
+# 4. Check retrieval quality with a real (if small) eval
+python rag_eval.py
+python rag_eval.py --top-k 5
+```
+
+`user_stories/` already has 14 sample story files (2 per section) checked
+in, generated from the real portfolio content, so you can run steps 2-4
+immediately without needing Ollama running yet -- useful for a first pass
+just to see the mechanics.
+
+## Testing the MCP server
+
+```bash
+npx @modelcontextprotocol/inspector python mcp_server.py
+```
+
+Try calling `search_portfolio` with a query, then `run_rag_eval` -- seeing
+both in the Inspector UI is the fastest way to build intuition before
+wiring this to Claude Desktop or Claude Code (see registration snippets
+below).
+
+## Registering with Claude Desktop
+
+```json
+{
+  "mcpServers": {
+    "qa-workflow": {
+      "command": "python",
+      "args": ["/absolute/path/to/project/mcp_server.py"]
+    }
+  }
+}
+```
+
+## Registering with Claude Code
+
+```bash
+claude mcp add qa-workflow -- python /absolute/path/to/project/mcp_server.py
+```
+
+## What each new concept actually looks like here
+
+- **Chunking** (`src/utils/chunking.py`): word-count-based splitter with
+  configurable `chunk_size`/`overlap`. Run `python src/utils/chunking.py`
+  directly for a standalone demo -- no other setup needed, since it doesn't
+  touch Ollama or Chroma.
+- **Metadata / section-wise categorization**: every chunk stored carries
+  `{section, story_id, source, chunk_index}`. `check_retrieval.py --section
+  projects` and `search_portfolio(section="projects")` both filter on it.
+- **Retrieval checkup**: `check_retrieval.py` -- read the comments at the
+  top of the file, they explain what the distance numbers mean and how to
+  build intuition for "is this actually a good match."
+- **RAG eval**: `rag_eval.py` -- deliberately scoped to retrieval quality
+  (Hit@k), not generation quality, with comments on how to grow it into a
+  generation-level eval later using the same rubric style you built at
+  EPAM (quality, hallucination, bias, safety, consistency) -- that's the
+  legitimate bridge between this demo and "I've done similar RAG eval
+  work before."
+
+## For the Infosys interview
+
+This project now demonstrates, concretely and defensibly:
+- **RAG**: real embeddings, real vector DB, chunking with a stated
+  rationale, metadata-filtered retrieval, and a retrieval-quality eval --
+  not just "I called an embed function once."
+- **MCP Engineering**: 12 tools wrapping a real workflow, not a toy
+  echo-tool -- including tools that trigger regeneration and reindexing,
+  which is closer to "streamline developer workflows" than a single
+  static Q&A tool would be.
+- **Context engineering**: the static/dynamic memory split in
+  `src/workflow.py`, plus retrieved context feeding `analyze_story` -- you
+  can point at the exact `PROMPT_FIELDS` dict and explain why each prompt
+  gets exactly the fields it needs, no more.
+
+Be ready to say out loud, unprompted, the two design decisions that came
+up while building this: (1) seeding is a separate script from the
+workflow, not baked into `main()`, because seeding is a data-maintenance
+concern and the workflow is a per-request concern; (2) `add_story_to_db`
+upserts by id, so re-running seeding is always safe. Small details like
+that are exactly what separates "followed a tutorial" from "understands
+why the code is shaped this way" in an interview.

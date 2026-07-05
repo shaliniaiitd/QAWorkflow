@@ -2,3 +2,7 @@ mcp
 langgraph
 langchain-ollama
 chromadb
+langsmith
+python-dotenv
+streamlit
+pandas

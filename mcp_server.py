@@ -41,6 +41,8 @@ from scripts.generate_user_stories import (
     write_story_file,
 )
 from src.utils.vector_store import collection_stats, retrieve_similar_chunks
+from src.utils.guardrails import screen_user_story, check_bdd_output_schema
+from src.utils.observability import read_log
 
 mcp = FastMCP(
     "qa-workflow",
@@ -266,6 +268,56 @@ def run_rag_eval(top_k: int = 3) -> str:
 
 
 @mcp.tool()
+def check_guardrails(user_story: str = "", bdd_cases: str = "") -> str:
+    """Run the guardrail checks directly, without executing the workflow.
+
+    Useful for testing whether a given input would be blocked, or whether
+    a piece of generated BDD text would pass the output schema check --
+    without spending an LLM call to find out.
+
+    Args:
+        user_story: If provided, checks it for prompt-injection/SQLi patterns.
+        bdd_cases: If provided, checks it for valid Gherkin structure.
+    """
+    lines = []
+    if user_story:
+        result = screen_user_story(user_story)
+        lines.append(f"user_story: {'PASS' if result.passed else 'BLOCKED - ' + result.reason}")
+    if bdd_cases:
+        result = check_bdd_output_schema(bdd_cases)
+        lines.append(f"bdd_cases: {'PASS' if result.passed else 'INVALID - ' + result.reason}")
+    return "\n".join(lines) if lines else "Provide user_story and/or bdd_cases to check."
+
+
+@mcp.tool()
+def get_observability_report() -> str:
+    """Return latency/token stats per workflow node from the local
+    observability log (observability_log.jsonl), written automatically by
+    every LLM call in src/workflow.py. Shows call count, mean/min/max/p95
+    latency, and average tokens (when the model reports usage) per node.
+    """
+    records = read_log()
+    if not records:
+        return "No observability data yet -- run the workflow at least once first."
+
+    from collections import defaultdict
+    import statistics
+
+    by_node = defaultdict(list)
+    for r in records:
+        by_node[r["node"]].append(r["latency_s"])
+
+    lines = [f"Total calls logged: {len(records)}"]
+    for node, latencies in sorted(by_node.items()):
+        lines.append(
+            f"  {node}: {len(latencies)} calls, "
+            f"mean={statistics.mean(latencies):.3f}s, "
+            f"max={max(latencies):.3f}s"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def run_full_qa_workflow(user_story: str) -> str:
     """Run the entire QA workflow graph end-to-end: retrieve context,
     analyze, write dynamic memory, generate BDD, review, assemble report,
@@ -279,12 +331,8 @@ def run_full_qa_workflow(user_story: str) -> str:
     Args:
         user_story: The raw user story text.
     """
-    app = wf.build_graph()
-    final_path = None
-    for event in app.stream({"user_story": user_story}):
-        if "save_report" in event:
-            final_path = event["save_report"].get("output_path")
-    return final_path or "No report path returned."
+    result = wf.run_workflow(user_story)
+    return result.get("output_path") or "No report path returned."
 
 
 if __name__ == "__main__":

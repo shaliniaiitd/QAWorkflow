@@ -9,8 +9,7 @@ vector DB with section metadata -> retrieval you can inspect and evaluate
 ## Pipeline, in order
 
 ```
-data/portfolio_content.json
-        |
+data/portfolio_content.json     -- extracted from website         |
         v
 scripts/generate_user_stories.py   --> user_stories/<section>/story_N.md
         |                               (LLM-generated, grounded in real content,
@@ -56,13 +55,15 @@ python check_retrieval.py   # runs a few built-in demo queries
 python rag_eval.py
 python rag_eval.py --top-k 5
 ```
+![alt text](<Screenshot 2026-07-05 224008-1.png>)
 
 ## Testing the MCP server
 
 ```bash
 npx @modelcontextprotocol/inspector python mcp_server.py
 ```
-
+Sample run
+![alt text](image-1.png)
 ## Registering with Claude Desktop
 
 ```json
@@ -81,3 +82,23 @@ npx @modelcontextprotocol/inspector python mcp_server.py
 ```bash
 claude mcp add qa-workflow -- python /absolute/path/to/project/mcp_server.py
 ```
+Tested on claude code
+run the full QA workflow for the user story: As a user, I want to update my email address so I can receive notifications.
+
+## Running observability
+
+1. `pip install -r requirements.txt`
+2. Copy `.env.example` to `.env`, fill in your LangSmith key (optional — works without it)
+3. Run the workflow at least once: `python -m src.workflow`
+4. See local latency baselines: `python observability_report.py`
+![alt text](image-1.png)
+   Expected output: a table of node names with call count, mean/min/max/p95 latency, avg tokens
+5. (Optional, needs .env keys) Open smith.langchain.com — under your project you'll see one trace per workflow run, expandable into each node call
+
+## Running guardrails
+
+- Via MCP tool: `check_guardrails` (pass `user_story` and/or `bdd_cases`)
+- Directly: `python -c "from src.utils.guardrails import screen_user_story; print(screen_user_story('your text'))"`
+- Expected: `GuardrailResult(passed=True, reason='')` for clean input, `passed=False` with a reason string if blocked
+- The workflow applies these automatically — a blocked user_story short-circuits to a "Blocked" report; invalid BDD output triggers up to 2 silent regeneration attempts before proceeding anyway
+

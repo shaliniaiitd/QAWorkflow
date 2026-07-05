@@ -3,4 +3,4 @@ id: skills_1
 section: skills
 source: https://shaliniaiitd.github.io
 ---
-As a recruiter, I want to see the full technical stack (languages, cloud, DevOps) so that I can match the candidate against a JD's requirements.
+As a hiring manager, I want to ensure that the portfolio is well-organized and easy to navigate. So that the user can quickly find the information they need.

@@ -3,4 +3,4 @@ id: projects_2
 section: projects
 source: https://shaliniaiitd.github.io
 ---
-As a recruiter, I want to see concrete GenAI project involvement so that I can match the candidate to AI-focused roles.
+As a recruiter, I want to ensure that the project is competitive and offers value to the client. So that the team can attract top talent.

@@ -1,15 +1,10 @@
-"""File: seed_vector_db.py (replaces the seeding half of run_demo.py)
+"""File: seed_vector_db.py 
 
 Dynamically seeds the vector DB from every file under user_stories/,
-instead of a hardcoded list. This is the "part of the flow vs. separate
-script" question resolved: seeding stays a separate, explicit step (run
-on demand, not on every workflow execution) -- but it's no longer tied to
-three hardcoded strings. Run scripts/generate_user_stories.py to add more
-source material, then re-run this to (re-)index it.
+instead of a hardcoded list.Seeding stays a separate, explicit step (run
+on demand, not on every workflow execution). 
 
-What changed vs. the original run_demo.py's seed_vector_db():
-- Reads user_stories/<section>/*.md dynamically (glob), instead of three
-  add_story_to_db(...) calls.
+What happens in seed_vector_db():
 - Parses the YAML frontmatter each file was written with (id, section,
   source) so that metadata -- not just raw text -- goes into the vector
   store. That's what makes section-filtered retrieval and the RAG eval
@@ -23,7 +18,7 @@ What changed vs. the original run_demo.py's seed_vector_db():
   collection.upsert) so re-running this is always safe.
 
 How to run:
-    python seed_vector_db.py
+    python seed_vector_db.py  (default chunk-size = 60 and overlap = 10
     python seed_vector_db.py --chunk-size 40 --overlap 8
 """
 

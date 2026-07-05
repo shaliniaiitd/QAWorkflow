@@ -36,8 +36,10 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 CHROMA_DIR = PROJECT_DIR / "chroma_db"
 COLLECTION_NAME = "user_stories"
 
+import os
+
 EMBED_MODEL = "nomic-embed-text"
-EMBED_BASE_URL = "http://localhost:11434"
+EMBED_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 
 _client: chromadb.ClientAPI | None = None
 _collection = None

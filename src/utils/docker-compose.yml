@@ -1,0 +1,35 @@
+# docker-compose.yml -- runs Ollama and the Streamlit app as two containers
+# on the same network, satisfying the "Docker Container" stage fully
+# self-contained, no external Ollama install needed.
+#
+# How to run:
+#   docker compose up --build
+#   # first run only, in a separate terminal, pull the models INSIDE the ollama container:
+#   docker compose exec ollama ollama pull qwen2.5-coder:0.5b
+#   docker compose exec ollama ollama pull nomic-embed-text
+#   # then open http://localhost:8501
+#
+# See the README's "Cloud deployment" section for why this compose file is
+# the honest target for "Docker Container," and what changes for "Cloud."
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+    depends_on:
+      - ollama
+    env_file:
+      - .env  # LangSmith keys, if you want tracing from inside the container too
+
+volumes:
+  ollama_models:
