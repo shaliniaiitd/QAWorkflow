@@ -4,3 +4,7 @@ __pycache__/
 outputs/
 .env
 observability_log.jsonl
+readme_backup
+# IDE settings
+.idea/
+.vscode/

@@ -20,8 +20,8 @@ it. Four checks now, each targeting a different risk:
    stored, relevant under India's DPDP Act 2023 (data minimization: don't
    retain personal data you don't need to). Note this project's current
    observability logging already only stores character counts, not raw
-   text (see observability.py) -- redact_pii is here for if/when 
-   choice is made to log actual prompt/response content for debugging.
+   text (see observability.py) -- redact_pii is here for if/when you
+   choose to log actual prompt/response content for debugging.
 
 5. check_with_llamaguard() -- OUTPUT/INPUT, OPTIONAL. Runs Meta's
    Llama Guard model (via Ollama) as a second, model-based safety
@@ -50,7 +50,7 @@ you don't accidentally claim more coverage than exists:
   LLM10 Unbounded Consumption       -> NOT covered here (would mean rate-limiting/cost caps on LLM calls)
 
 Being able to say "here's what I cover and here's what I know I don't"
-
+is a stronger interview answer than claiming blanket OWASP coverage.
 """
 
 from __future__ import annotations
@@ -172,7 +172,7 @@ def redact_pii(text: str) -> str:
 
 # --- Optional: Llama Guard as a second, model-based classifier ---
 
-def check_with_llamaguard(text: str, base_url: str = "http://localhost:11434") -> GuardrailResult:
+def check_with_llamaguard(text: str, base_url: str | None = None) -> GuardrailResult:
     """Classify text as safe/unsafe using Meta's Llama Guard model via Ollama.
 
     Requires `ollama pull llama-guard3` first. This is a MODEL-based check
@@ -184,7 +184,15 @@ def check_with_llamaguard(text: str, base_url: str = "http://localhost:11434") -
     returns passed=True with a note explaining it was skipped -- calling
     it is always safe, it just won't add protection until you've pulled
     the model.
+
+    Args:
+        base_url: Defaults to the OLLAMA_BASE_URL env var (same one
+            src/workflow.py and vector_store.py use), so this works
+            correctly whether running locally or inside Docker Compose.
     """
+    import os
+
+    base_url = base_url or os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
     try:
         from langchain_ollama import ChatOllama
 
