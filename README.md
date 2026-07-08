@@ -63,7 +63,7 @@ python rag_eval.py --top-k 5
 npx @modelcontextprotocol/inspector python mcp_server.py
 ```
 Sample run
-![alt text](image-1.png)
+![alt text](image.png)
 ## Registering with Claude Desktop
 
 ```json
@@ -93,12 +93,34 @@ run the full QA workflow for the user story: As a user, I want to update my emai
 4. See local latency baselines: `python observability_report.py`
 ![alt text](image-1.png)
    Expected output: a table of node names with call count, mean/min/max/p95 latency, avg tokens
-5. (Optional, needs .env keys) Open smith.langchain.com — under your project you'll see one trace per workflow run, expandable into each node call
-
+5. (Optional, needs .env keys) Open smith.langchain.com — under your project you'll see one trace per workflow run, expandable into each 
+node call
+![alt text](image-6.png)
 ## Running guardrails
 
 - Via MCP tool: `check_guardrails` (pass `user_story` and/or `bdd_cases`)
 - Directly: `python -c "from src.utils.guardrails import screen_user_story; print(screen_user_story('your text'))"`
 - Expected: `GuardrailResult(passed=True, reason='')` for clean input, `passed=False` with a reason string if blocked
 - The workflow applies these automatically — a blocked user_story short-circuits to a "Blocked" report; invalid BDD output triggers up to 2 silent regeneration attempts before proceeding anyway
+
+## Streamlit UI
+```bash
+streamlit run app.py
+```
+check at  http://localhost:8501
+
+Run Workflow
+![alt text](image-3.png)
+
+Check Guardrails
+- check input guardrail(regex)
+- check output guardrail(schema)
+- check with LlamaGuard (model based)
+![alt text](image-4.png)
+
+Observability
+
+
+
+
 

@@ -6,3 +6,5 @@ langsmith
 python-dotenv
 streamlit
 pandas
+fastapi
+uvicorn
