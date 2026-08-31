@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"name": "qa_workflow_project",
+			"path": "."
+		}
+	],
+	"settings": {
+		"workbench.editor.autoLockGroups": {
+			"vscode.markdown.editor": true
+		}
+	}
+}
