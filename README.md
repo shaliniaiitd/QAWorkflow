@@ -98,6 +98,8 @@ node call
 ![alt text](image-6.png)
 ## Running guardrails
 
+Requires `ollama pull llama-guard3` first.
+
 - Via MCP tool: `check_guardrails` (pass `user_story` and/or `bdd_cases`)
 - Directly: `python -c "from src.utils.guardrails import screen_user_story; print(screen_user_story('your text'))"`
 - Expected: `GuardrailResult(passed=True, reason='')` for clean input, `passed=False` with a reason string if blocked
@@ -116,10 +118,10 @@ Check Guardrails
 - check input guardrail(regex)
 - check output guardrail(schema)
 - check with LlamaGuard (model based)
-![alt text](image-4.png)
+![alt text](image-5.png)
 
 Observability
-
+![alt text](image-4.png)
 
 
 

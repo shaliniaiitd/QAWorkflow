@@ -3,4 +3,4 @@ id: education_1
 section: education
 source: https://shaliniaiitd.github.io
 ---
-As a recruiter, I want to find candidates who have experience in the field of applied optics and are looking for a position as an expert in this area so that they can contribute to the development of new technologies. So, I will be evaluating candidates based on their education level, experience, and skills.
+As a hiring manager, I want to ensure that the candidate has a strong background in technology and have experience working with applied optics. So that the candidate can apply for the position of a tech lead at Institute Rank 1. M.Sc., Electronics, Hindu College, Delhi University, University Rank 1. B.Sc., Physics, Hindu College, Delhi University, 84.44%.

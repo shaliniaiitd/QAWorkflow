@@ -222,9 +222,9 @@ def retrieve_memory(state: QAState) -> QAState:
     return {"retrieved_context": "\n".join(similar)}
 
 
-####################################
+###########################################################################
 # Guardrails (input) + intelligent branching (output validation + retry)
-###################################
+##########################################################################
 
 def screen_input(state: QAState) -> QAState:
     """Input guardrail: block the user_story before it ever reaches an LLM
