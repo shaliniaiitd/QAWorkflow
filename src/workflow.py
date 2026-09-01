@@ -42,13 +42,14 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 
 from dotenv import load_dotenv
 
 load_dotenv()  # picks up .env at project root -- LANGCHAIN_TRACING_V2, LANGCHAIN_API_KEY, etc.
 
 from langchain_ollama import ChatOllama
+from langchain_core.runnables import RunnableConfig
 from src.utils.vector_store import retrieve_similar_stories
 from src.utils.vector_store import add_story_to_db
 from src.utils.observability import traceable, timed_call, log_llm_call
@@ -122,7 +123,8 @@ def create_llm() -> ChatOllama:
 def _llm_text(llm: ChatOllama, prompt: str, node_name: str = "unknown") -> str:
     with timed_call() as t:
         msg = llm.invoke(prompt)
-    text = msg.content if hasattr(msg, "content") else str(msg)
+    raw_content = msg.content if hasattr(msg, "content") else msg
+    text = raw_content if isinstance(raw_content, str) else str(raw_content)
     usage = getattr(msg, "usage_metadata", None)
     log_llm_call(node_name, t.elapsed, len(prompt), len(text), usage)
     return text
@@ -174,7 +176,7 @@ def load_prompt(name: str) -> str:
     path = PROJECT_DIR / "prompts" / f"{name}.txt"
     return path.read_text(encoding="utf-8")
 
-def format_prompt(template_name: str, state: dict) -> str:
+def format_prompt(template_name: str, state: QAState) -> str:
     # Load the actual template text from file
     template = load_prompt(template_name)
     fields = {field: state.get(field, "") for field in PROMPT_FIELDS[template_name]}
@@ -342,8 +344,8 @@ def run_multiturn(user_story: str, thread_id: str, checkpointer=None) -> QAState
     """
     checkpointer = checkpointer or MemorySaver()
     app = build_graph(checkpointer=checkpointer)
-    config = {"configurable": {"thread_id": thread_id}}
-    return app.invoke({"user_story": user_story}, config=config)
+    config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+    return cast(QAState, app.invoke({"user_story": user_story}, config=config))
 
 
 @traceable(name="run_full_qa_workflow")
@@ -357,7 +359,7 @@ def run_workflow(user_story: str) -> QAState:
     trace hierarchy.
     """
     app = build_graph()
-    return app.invoke({"user_story": user_story})
+    return cast(QAState, app.invoke({"user_story": user_story}))
 
 
 def main() -> None:
