@@ -1,16 +1,18 @@
 {
-  "project_name": "Auth Portal",
-  "bdd_style": "Short business-readable scenarios with one happy path and one negative path",
+  "project_name": "Portfolio Site (shaliniaiitd.github.io)",
+  "bdd_style": "Short business-readable scenarios with one happy path and one negative/edge path, written from a hiring-manager or recruiter visitor perspective",
   "common_risks": [
-    "expired reset links",
-    "reused reset links",
-    "missing email delivery",
-    "weak password validation"
+    "outdated or inaccurate content (stale job titles, dates, skills)",
+    "broken external links (GitHub repos, certificates, source URLs)",
+    "missing or unclear evidence for claimed skills/projects",
+    "poor readability or navigation on mobile devices",
+    "inconsistent formatting across sections"
   ],
   "known_bug_patterns": [
-    "empty field validation missing",
-    "expired links accepted",
-    "password mismatch not handled",
-    "token reuse allowed"
+    "dead links to project repos or certificates",
+    "content sections not rendering or truncated",
+    "responsive layout breaking on smaller viewports",
+    "outdated information not reflecting most recent role/skills",
+    "missing alt text or accessibility issues on key content"
   ]
 }
