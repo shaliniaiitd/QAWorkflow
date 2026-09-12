@@ -49,6 +49,7 @@ from dotenv import load_dotenv
 load_dotenv()  # picks up .env at project root -- LANGCHAIN_TRACING_V2, LANGCHAIN_API_KEY, etc.
 
 from langchain_ollama import ChatOllama
+from langchain_groq import ChatGroq
 from langchain_core.runnables import RunnableConfig
 from src.utils.vector_store import retrieve_similar_stories
 from src.utils.vector_store import add_story_to_db
@@ -67,7 +68,7 @@ except ImportError as exc:  # pragma: no cover
 
 
 MODEL_CONFIG = {
-    "model_name": "qwen2.5-coder:0.5b",
+    "model_name": os.environ.get("GROQ_MODEL_NAME", "openai/gpt-oss-20b"),
     "temperature": 0.2,
     "base_url": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434"),
 }
@@ -111,7 +112,16 @@ class QAState(TypedDict, total=False):
     retry_count: int
 
 
-def create_llm() -> ChatOllama:
+def create_llm():
+    groq_api_key = os.environ.get("GROQ_API_KEY")
+    if groq_api_key:
+        return ChatGroq(
+            api_key=groq_api_key,
+            model=MODEL_CONFIG["model_name"],
+            temperature=MODEL_CONFIG["temperature"],
+            max_tokens=600,
+        )
+
     return ChatOllama(
         model=MODEL_CONFIG["model_name"],
         temperature=MODEL_CONFIG["temperature"],
@@ -120,7 +130,7 @@ def create_llm() -> ChatOllama:
 
 
 @traceable(name="llm_text_call")
-def _llm_text(llm: ChatOllama, prompt: str, node_name: str = "unknown") -> str:
+def _llm_text(llm, prompt: str, node_name: str = "unknown") -> str:
     with timed_call() as t:
         msg = llm.invoke(prompt)
     raw_content = msg.content if hasattr(msg, "content") else msg
@@ -130,15 +140,14 @@ def _llm_text(llm: ChatOllama, prompt: str, node_name: str = "unknown") -> str:
     return text
 
 
-_LLM: ChatOllama | None = None
+_LLM = None
 
 
-def get_llm() -> ChatOllama:
+def get_llm():
     """Lazily construct (and cache) the LLM client.
 
-    Deferred so importing this module never touches Ollama until a node
-    actually runs a prompt -- important for mcp_server.py, which imports
-    this module at startup before any tool has been invoked.
+    Deferred so importing this module never touches the backend until a node
+    actually runs a prompt.
     """
     global _LLM
     if _LLM is None:
