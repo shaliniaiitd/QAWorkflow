@@ -3,4 +3,4 @@ id: skills_2
 section: skills
 source: https://shaliniaiitd.github.io
 ---
-As a Recruiter, I want to make sure that the portfolio is relevant to the company's goals. So that the user can see how the company values their skills and experiences.
+As a recruiter, I want to ensure that the portfolio is well-organized and easy to navigate. So that the user can quickly find the information they need to complete the project.

@@ -1,3 +1,6 @@
+'''Test cases for workflow_phase1 helpers.'''
+
+
 from src.workflow_phase1 import (
     _diagnose_failure_pattern,
     _is_valid_script_content,

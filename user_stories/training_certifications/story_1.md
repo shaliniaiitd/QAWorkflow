@@ -3,4 +3,4 @@ id: training_certifications_1
 section: training_certifications
 source: https://shaliniaiitd.github.io
 ---
-As a hiring manager, I want to evaluate the quality of my team's training program so that it aligns with the company's values and goals. The goal is to ensure that all employees are trained in the latest technologies and best practices.
+As a hiring manager, I want to create a comprehensive training curriculum for AI developers to enhance their skills and knowledge in the field. This curriculum should cover the basics of AI, including machine learning, natural language processing, and data analysis. The goal is to provide a structured approach to learning AI, ensuring that the students have a solid foundation in the subject matter.

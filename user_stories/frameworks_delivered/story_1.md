@@ -3,4 +3,4 @@ id: frameworks_delivered_1
 section: frameworks_delivered
 source: https://shaliniaiitd.github.io
 ---
-As a hiring manager, I want to ensure that the frameworks delivered meet the project's requirements by providing a structured framework for validating contracts, Selenium POM + Behave framework for automation, BrowserStack coverage, Allure reporting, dead-link detection, and localization validation. BDD Regression Framework: built a Selenium POM + Behave framework for multilingual portal automation, BrowserStack coverage, Allure reporting, dead-link detection, and localization validation. LLM Prompt Evaluation: created structured rubrics for evaluating prompt clarity, accuracy, context, safety, hallucination risk, consistency, and comparative LLM response quality.
+As a hiring manager, I want to ensure that the framework delivered is robust, scalable, and efficient, so that the development team can quickly integrate and maintain the solution. This requires a comprehensive testing strategy that covers various aspects of the framework, including its integration with existing systems, its performance, and its scalability.

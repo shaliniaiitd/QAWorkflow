@@ -1,3 +1,9 @@
+## About This Document
+
+This is a public design artifact for QAWorkflow, an open-source multi-agent AI test automation system. It's part of a portfolio demonstrating architecture design, documentation practices, and agentic AI patterns for QA.
+
+**If you're interested in training, consulting, or architecture guidance on similar systems, reach out  [iitd.shalinia@gmail.com][+91-6281300957].**
+
 # QAWorkflow — Multi-Agent AI Test Automation System
 ### PRD + Technical Design Doc
 **Owner:** Shalini Agarwal | **Status:** Draft v2 | **Last updated:** 2026-09-01
@@ -178,11 +184,57 @@ Assigned by TestCaseReviewAgent alongside its qualitative review pass — rule-b
 
 ---
 
-## 9. Phase 2 Preview — Scriptless Execution, and What HITL Needs to Become
+## 9. Phase 2 Design — Grounding Test Generation in Reality, and What HITL Needs to Become
 
-### 9.1 Scriptless / On-the-Fly Execution
+### 9.0 Problem Statement, With Evidence
 
-ExecutionAgent's job changes from *generate script → run script* to *interpret each BDD step live against the current DOM* (Playwright MCP tool calls, no intermediate script file). Resilience shifts from "fix broken generated code after the fact" to "live interpretation adapts in the moment" — HealingAgent's trigger conditions get redefined here (cache-miss-on-replay vs. genuine live-execution failure are different failure modes). Configurable execution mode from Section 8 goes live in this phase.
+Phase 1's `ExecutionAgent` generates a pytest-playwright script from BDD text alone — no knowledge of the actual target page's DOM. Running it against the real site (`https://shaliniaiitd.github.io`, story `projects_1`) produced 7 failures out of 9 tests. Categorizing the actual failures:
+
+| Failure type | Example from this run | Root cause |
+|---|---|---|
+| **Selector guessing** | `locator("text=Home")` not found; `.project-card` count 0; `button.hamburger` not found | LLM invented plausible-sounding selectors for "a typical portfolio site," with zero knowledge of the real DOM |
+| **False positive** | LinkedIn URL returned HTTP `999` → treated as broken | LinkedIn deliberately returns `999` to block automated/bot requests — not a real link failure, but the test has no way to know that |
+| **Ungrounded invented scenario** | "No deleted GitHub repo link found," "No certificate link points to 404" | LLM imagined plausible *negative* test scenarios with no way to verify whether such a case actually exists on the real site |
+| **Possibly genuine finding** | Image with empty `alt` text | One failure that may reflect a real, worth-fixing issue — the one category where ungrounded generation still adds value |
+
+**The pattern:** roughly 1 in 3 generated assertions is a legitimate finding or a fair test; the rest are artifacts of the model never having seen the actual page. This isn't a prompt-wording problem — it's structural. No amount of prompt engineering fixes "the model doesn't know what's actually on the page."
+
+### 9.1 Two-Part Fix: 2a (grounded generation) now, 2b (live execution) as the fuller solution
+
+Rather than jumping straight to the full live/scriptless rebuild, split Phase 2 into two increments — each independently demoable, and together they tell a clean "before → partial fix → full fix" portfolio story:
+
+**Phase 2a — DOM-grounded script generation (smaller, immediate)**
+Scripts are still generated ahead of time (static, like Phase 1), but the codegen prompt is no longer blind. Before calling the LLM:
+1. **Scan the real target page** — fetch `TARGET_APP_URL` via Playwright (or a lightweight HTTP + BeautifulSoup pass) and extract structural facts: actual nav link text, real class names on key elements, actual `<img>` alt-text state, real external links present on the page.
+2. **Feed that structural summary into the codegen prompt** alongside the BDD cases — replacing "here's a URL, guess the DOM" with "here's a URL and here's what's actually on it."
+3. **Special-case known bot-blocking domains** (LinkedIn `999`, similar patterns) in the codegen instructions, so external-link checks don't misreport intentional anti-scraping responses as broken links.
+4. **Constrain invented negative scenarios** — TestCaseReviewAgent flags BDD cases that assert the *absence* of something unverifiable (a "deleted repo," a "404 certificate") as speculative, and either drops them or routes them to a human-reviewable list rather than generating a script assertion for something that may not exist.
+
+This directly fixes the selector-guessing and false-positive categories (the majority of today's failures) without requiring live tool-calling infrastructure.
+
+**Phase 2b — Live/scriptless execution (bigger, the original Phase 2 vision, still deferred)**
+ExecutionAgent's job becomes: interpret each BDD step live against the *current* DOM (Playwright MCP tool calls), no intermediate script file. This is the fuller fix — resilient to drift *between* runs, not just accurate at generation time — but it's a bigger lift (agent loop, tool-calling infrastructure, MCP wiring) and 2a alone resolves most of what today's evidence shows. Sections 9.2–9.4 below (HITL in app.py, LangGraph Studio, MCP HITL) remain scoped to this fuller phase, unchanged from the original plan.
+
+### 9.1.1 Phasewise Artifact Organization
+
+To make the "what did each phase actually fix" story demonstrable rather than just claimed, scripts and results are kept **separated by phase**, not overwritten in place:
+
+```
+tests/
+  phase1/            # ungrounded generation -- kept as-is, the "before" baseline
+    test_projects_1.py
+    ...
+  phase2/            # DOM-grounded generation (2a) and later live execution (2b)
+    test_projects_1.py
+    ...
+outputs/test_results/
+  phase1/
+    projects_1.log
+  phase2/
+    projects_1.log
+```
+
+Phase 1 code (`generate_script_for_story`, `execution_agent`, `_run_pytest_script`) writes under the `phase1/` subfolder; Phase 2 code (once built) writes under `phase2/`, using the *same* story ID so a single story's before/after logs and scripts sit side by side for direct comparison.
 
 ### 9.2 HITL in app.py
 
@@ -232,3 +284,20 @@ The local model backing every node is small (0.5B parameters), and that has conc
 - **Reasoning depth for judgment-heavy nodes.** HealingAgent's job ("diagnose why this failed, propose a fix") is qualitatively harder than schema-shaped generation (writing a BDD case). A 0.5B model may produce shallow or generic diagnoses where a larger model would reason more concretely about the actual failure. **Mitigation:** extend the existing guardrail pattern — validate `healing_proposed` output shape and specificity before acting on it, same retry-on-failure treatment `validate_bdd` already gets. If output quality proves insufficient once built and tested, consider a mixed-model setup: keep `qwen2.5-coder:0.5b` for cheap, schema-shaped generation (BDD writing), but point HealingAgent's diagnosis step at a larger local model via Ollama (e.g. a 7B variant) — Ollama makes per-call model swaps cheap, so this is a config change, not a redesign.
 - **Long-context degradation.** Nodes that combine static memory + dynamic memory + retrieved context + user story into one prompt (`analyze_story`, `generate_bdd`) risk quality drop-off as that combined prompt grows, more so at 0.5B than at larger scale. **Mitigation:** watch prompt length as new agents are added; keep each agent's prompt scoped to only the state fields it actually needs (already partially enforced via `PROMPT_FIELDS`).
 - **Validate before building around it.** Before writing HealingAgent's retry/guardrail logic, worth manually running a handful of representative diagnosis prompts against the 0.5B model to see whether this is a real problem to design around or a hypothetical one — empirical check is cheaper than architecting defensively against an untested assumption.
+
+### 12.2 Static memory / context drift
+
+**Discovered in practice, not anticipated in the original design:** `project_memory.json` (which feeds `static_memory`, injected into every `analyze_story`/`generate_bdd` prompt) started as a leftover "Auth Portal / password-reset" placeholder from an earlier tutorial exercise, while the actual user stories are generated from `data/portfolio_content.json` (a resume/portfolio site with no login functionality). The mismatch wasn't caught until HealingAgent produced diagnoses that made no sense ("update the login selector") for an app with no login page — the LLM was correctly following the context it was given, which was simply wrong for the actual target application.
+
+**Lesson:** `static_memory` is a strong, unconditional prior injected into *every* prompt in the pipeline — stale or mismatched content there silently biases every downstream artifact (analysis, BDD cases, generated scripts, healing diagnoses) without producing any error, because nothing is technically invalid, just ungrounded. Worth periodically auditing `project_memory.json` against the actual target application whenever the target changes, and worth eventually adding a lightweight consistency check (e.g., does `static_memory`'s vocabulary overlap at all with the retrieved/generated content?) rather than relying on catching it downstream via a confused HealingAgent output.
+
+### 12.3 Simulating failures to actually test HealingAgent (deferred to Phase 2)
+
+HealingAgent's rule-based diagnosis (Section on HealingAgent, `_diagnose_failure_pattern`) has only been exercised against whatever failures happen to occur naturally (e.g., the Auth Portal mismatch above). To properly validate the healer, failures need to be **deliberately and reproducibly induced** rather than waited for:
+
+- **Locator drift** — intentionally rename a class/id/data-testid in a test target page (or point the test at a modified copy of the page) between test generation and execution, to trigger the selector-not-found pattern on demand
+- **Flakiness** — inject artificial randomness into element visibility/timing (e.g., a test fixture page with a randomized render delay) to trigger the timeout/wait pattern reproducibly
+- **Network delays** — use Playwright's built-in network throttling/route interception to simulate slow responses
+- **429 / rate limiting** — use Playwright route interception to mock a 429 response from a target endpoint and verify HealingAgent's diagnosis correctly identifies it as distinct from a generic navigation failure (current rule-based patterns don't have a specific 429/rate-limit branch yet — worth adding when this is tackled)
+
+This is real test infrastructure in its own right (a fault-injection harness), not a quick addition — noting it here as a concrete Phase 2 item rather than building it now, since Phase 1's priority is proving the end-to-end loop works, not yet proving the healer is good.
