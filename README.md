@@ -123,15 +123,20 @@ Check Guardrails
 Observability
 ![alt text](image-4.png)
 
-## Phase 1: Multi-Agent Workflow (Supervisor + Swarm + HITL)
+## Phase 1 & 2a: Multi-Agent Workflow (Supervisor + Swarm + HITL)
 
-`src/workflow_phase1.py` refactors the original linear pipeline into a hybrid
+`src/qa_workflow.py` refactors the original linear pipeline into a hybrid
 supervisor + swarm architecture: Supervisor (entry, guardrail, run metadata) →
 TestCaseGenAgent → TestCaseReviewAgent (classifies smoke/regression/sanity/
 exploratory) → ExecutionAgent (generates + runs a pytest-playwright script) →
 HealingAgent (rule-based failure diagnosis) → ReportAgent, with three
 human-in-the-loop approval gates (pre-execution, pre-healing, pre-publish).
 Full design rationale, diagrams, and phasing: see `QAWorkflow_Design_doc.md`.
+
+Scripts and results are kept **separated by phase** (`tests/phase1/`,
+`tests/phase2/`, `outputs/test_results/phase1/`, `outputs/test_results/phase2/`)
+so the same story's before/after generations sit side by side, directly
+comparable — see design doc Section 9.1.2 for the actual comparison.
 
 ### Batch mode (default) — CI/CD-style test generation
 
@@ -141,37 +146,45 @@ this is the "test generation" stage of a pipeline, not a full execute/heal
 run.
 
 ```bash
-# Process all user stories (default)
-python -m src.workflow_phase1
+# Process all user stories (default, Phase 1 ungrounded codegen)
+python -m src.qa_workflow
 
 # Process just one story by id (matches the `id:` field in its frontmatter)
-python -m src.workflow_phase1 --story projects_1
+python -m src.qa_workflow --story projects_1
 
 # Regenerate user stories from data/portfolio_content.json + re-seed the
 # vector DB first, then batch-process
-python -m src.workflow_phase1 --seed
+python -m src.qa_workflow --seed
+
+# Phase 2a: scan the real target page first, then use DOM-grounded codegen
+# instead of letting the LLM guess selectors/nav text/class names
+python -m src.qa_workflow --phase2
+python -m src.qa_workflow --phase2 --story projects_1
 ```
 
 **Caching rule:** smoke and regression test types reuse an existing script
-(`tests/test_<story_id>.py`) if one's already been generated for that story;
-sanity and exploratory always regenerate fresh. All types are saved locally
-regardless, for audit purposes. Ends with a summary table (story id, type,
-status, script path, cached or not).
+(`tests/<phase>/test_<story_id>.py`) if one's already been generated for that
+story; sanity and exploratory always regenerate fresh. All types are saved
+locally regardless, for audit purposes. A cached file is only reused if it
+actually has real content — an empty/broken file is treated as a cache-miss
+and regenerated. Ends with a summary table (story id, type, status, script
+path, cached or not, pass/fail).
 
 ### Demo mode — full interactive pipeline, one story
 
 Runs the complete loop for a single story, including test execution via
 pytest, rule-based healing on failure, and all three HITL approval gates.
+Demo mode currently always uses Phase 1's ungrounded codegen.
 
 ```bash
 # Interactive (prompts Y/N at each of the 3 HITL gates)
-python -m src.workflow_phase1 --demo
+python -m src.qa_workflow --demo
 
 # Auto-approve every gate (useful for a hands-off end-to-end check)
-python -m src.workflow_phase1 --demo --auto-approve
+python -m src.qa_workflow --demo --auto-approve
 
 # Provide your own story instead of the default
-python -m src.workflow_phase1 --demo --user-story "As a user, I want to..."
+python -m src.qa_workflow --demo --user-story "As a user, I want to..."
 ```
 
 **Note:** `project_memory.json` feeds context into every generation prompt —

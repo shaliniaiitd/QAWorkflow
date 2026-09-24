@@ -1,4 +1,4 @@
-"""File: src/workflow_phase1.py
+"""File: src/qa_workflow.py
 
 Phase 1 of QAWorkflow — Multi-Agent Architecture with HITL Approval Gates
 
@@ -33,7 +33,7 @@ Prereqs (same as workflow.py):
   - project_memory.json at project root
 
 How to run:
-    python -m src.workflow_phase1
+    python -m src.qa_workflow
 """
 
 from __future__ import annotations
@@ -151,9 +151,14 @@ def create_llm():
             api_key=groq_api_key,
             model=MODEL_CONFIG["model_name"],
             temperature=MODEL_CONFIG["temperature"],
-            max_tokens=3000,  # codegen prompts need real headroom; 600 was clipping
-                              # reasoning-model output (openai/gpt-oss-20b) to empty
-                              # before it reached final answer text
+            max_tokens=4000,  # headroom for codegen output on top of reasoning tokens
+            reasoning_effort="low",  # openai/gpt-oss-20b spends part of its token budget on
+                                     # hidden reasoning before the final answer; "medium" (the
+                                     # default) was eating enough of that budget on longer/more
+                                     # complex prompts (e.g. Phase 2a's grounded codegen) to
+                                     # squeeze the final content out entirely, returning empty.
+                                     # "low" is appropriate here since codegen-from-structured-
+                                     # input doesn't need heavy deliberation.
         )
 
     return ChatOllama(
@@ -425,16 +430,17 @@ def _strip_code_fences(text: str) -> str:
     return text
 
 
-def _run_pytest_script(script_path: Path, log_name: str, timeout: int = 120) -> tuple[str, str, Path]:
+def _run_pytest_script(script_path: Path, log_name: str, timeout: int = 120, phase: str = "phase1") -> tuple[str, str, Path]:
     """Run a pytest script, streaming output live to console while also
-    saving the full output to outputs/test_results/<log_name>.log.
+    saving the full output to outputs/test_results/<phase>/<log_name>.log.
 
-    Shared by execution_agent (--demo mode) and run_batch, so console
-    visibility + persisted logs happen the same way in both places.
+    Shared by execution_agent (--demo mode) and run_batch (both phase1 and
+    phase2), so console visibility + persisted logs happen the same way
+    everywhere, just filed under the right phase folder for comparison.
 
     Returns (execution_result, execution_log_summary, log_file_path).
     """
-    results_dir = OUTPUTS_DIR / "test_results" / "phase1"
+    results_dir = OUTPUTS_DIR / "test_results" / phase
     results_dir.mkdir(parents=True, exist_ok=True)
     log_path = results_dir / f"{log_name}.log"
 
@@ -936,6 +942,212 @@ def _is_valid_script(path: Path) -> bool:
     return _is_valid_script_content(content)
 
 
+# ============================================================================
+# PHASE 2a — DOM-grounded script generation (design doc Section 9.1)
+#
+# Problem: Phase 1's _generate_playwright_script has no knowledge of the real
+# target page -- the LLM invents plausible-sounding selectors/nav text/class
+# names for "a typical portfolio site" and is usually wrong. scan_target_page
+# fixes this by inspecting the ACTUAL rendered page once, then feeding those
+# real facts into the codegen prompt instead of letting the model guess.
+# ============================================================================
+
+def scan_target_page(url: str = TARGET_APP_URL, timeout_ms: int = 30000) -> dict:
+    """Fetch the real target page and extract structural facts to ground
+    codegen: actual nav link text, headings, image alt-text state, external
+    links present, and a sample of real CSS classes in use.
+
+    Uses Playwright's sync API directly (a one-off inspection, not a pytest
+    test) -- run once per batch, not once per story, since every story in
+    this project targets the same single-page site.
+    """
+    from playwright.sync_api import sync_playwright
+
+    facts: dict = {
+        "nav_links": [], "headings": [], "images_total": 0,
+        "images_missing_alt": 0, "external_links": [], "classes_sample": [],
+    }
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+
+        nav_texts = page.locator("nav a, header a").all_inner_texts()
+        facts["nav_links"] = [t.strip() for t in nav_texts if t.strip()][:15]
+
+        heading_texts = page.locator("h1, h2, h3").all_inner_texts()
+        facts["headings"] = [t.strip() for t in heading_texts if t.strip()][:15]
+
+        images = page.locator("img").all()
+        facts["images_total"] = len(images)
+        for img in images:
+            alt = img.get_attribute("alt")
+            if alt is None:  # attribute genuinely absent -- a real violation.
+                # Note: alt="" (present but empty) is NOT counted here -- that's the
+                # correct, deliberate WCAG pattern for decorative images, not a bug.
+                # Counting it as "missing" would produce false positives on sites that
+                # correctly mark decorative images this way.
+                facts["images_missing_alt"] += 1
+
+        links = page.locator("a[href^='http']").all()
+        hrefs = set()
+        for link in links:
+            href = link.get_attribute("href")
+            if href and url not in href:
+                hrefs.add(href)
+        facts["external_links"] = sorted(hrefs)[:20]
+
+        try:
+            facts["classes_sample"] = page.eval_on_selector_all(
+                "[class]",
+                "els => [...new Set(els.map(e => e.className).filter(c => typeof c === 'string' && c.trim()))].slice(0, 40)",
+            )
+        except Exception:
+            facts["classes_sample"] = []
+
+        browser.close()
+    return facts
+
+
+def _format_page_facts(facts: dict) -> str:
+    """Render scanned page facts into a compact block for the codegen prompt.
+
+    Nav links are rendered as a literal Python list (not comma-joined prose) --
+    an earlier version joined them as text and the model mis-transcribed the
+    order/count when copying it into an assertion. Giving it as a literal
+    list the model can paste directly removed that failure mode.
+    """
+    nav_list_literal = repr(facts["nav_links"])
+    return (
+        f"Navigation link text actually found, in DOM order -- use this EXACT list,\n"
+        f"do not reorder, drop, or add entries: {nav_list_literal}\n"
+        f"Headings actually found: {', '.join(facts['headings']) or '(none found)'}\n"
+        f"Images: {facts['images_total']} total, {facts['images_missing_alt']} missing alt text\n"
+        f"External links actually found on the page: {', '.join(facts['external_links'][:10]) or '(none found)'}\n"
+        f"Sample of real CSS classes present on the page: {', '.join(facts['classes_sample']) or '(none found)'}"
+    )
+
+
+def _generate_grounded_playwright_script(bdd_cases: str, page_facts: dict, node_name: str) -> str:
+    """Phase 2a codegen: same contract as _generate_playwright_script, but the
+    prompt is grounded in a real DOM scan instead of letting the model guess.
+
+    Two lessons folded in from the first real test of this prompt (see design
+    doc Section 9.1.2 for the full before/after analysis):
+    - Bot-domain status-code handling is given as literal, copy-pasteable
+      code rather than a prose rule -- prose instructions are not reliably
+      followed for a single specific edge case buried in a longer prompt.
+    - The model has hallucinated a nonexistent Playwright method
+      (`Locator.all_attribute_values`) and matched "Work" against "Frameworks"
+      via unqualified has_text substring matching -- both are now called out
+      explicitly as things to avoid.
+    """
+    facts_summary = _format_page_facts(page_facts)
+    prompt = f"""Convert the following BDD Gherkin test cases into a pytest-playwright Python script.
+
+The target application is at: {TARGET_APP_URL}
+
+REAL PAGE STRUCTURE (scanned directly from the live page just now -- use this,
+do NOT invent selectors, nav text, or class names that aren't listed here):
+{facts_summary}
+
+For checking external link status codes, use exactly this pattern (copy it as-is,
+do not paraphrase or simplify the bot-domain handling):
+```
+BOT_BLOCKING_DOMAINS = ("linkedin.com",)
+
+def is_healthy_status(url: str, status: int) -> bool:
+    if any(domain in url for domain in BOT_BLOCKING_DOMAINS):
+        return status in (200, 999)  # 999 = intentional anti-bot response, not broken
+    return status == 200
+```
+Use `is_healthy_status(url, status)` in every external-link assertion instead of a bare
+`status == 200` check.
+
+Playwright API correctness -- these are real, verified Playwright sync API methods:
+- To get an attribute from every element matched by a locator, loop over `locator.all()`
+  and call `.get_attribute("href")` on each element individually. Do NOT use
+  `locator.all_attribute_values(...)` -- this method does not exist in Playwright.
+- When filtering a locator by visible text with `has_text=`, always pass `exact=True`
+  unless you specifically want substring matching (e.g. `page.get_by_role("link", name="Work", exact=True)`).
+  Without `exact=True`, "Work" will also match "Frameworks" as a substring.
+- To assert a count is greater than zero (not an exact count), get the count as a plain
+  Python integer with `locator.count()` and use a normal `assert count > 0`. Do NOT invent
+  assertion-helper method names like `to_have_count_greater_than` -- if you are not
+  certain a Playwright assertion method exists exactly as named, use `.count()` plus a
+  plain assert instead of guessing at a fluent-assertion method name.
+- Elements can have an `aria-label` that differs from their visible text (e.g. a logo
+  link showing "SA" visually may have aria-label="Shalini Agarwal home"). The REAL PAGE
+  STRUCTURE above lists visible text only. If a `get_by_role(..., name=...)` lookup for
+  a nav/header element seems uncertain, prefer a CSS/text-content locator (e.g.
+  `page.locator("header").get_by_text("Shalini Agarwal")`) over guessing the exact
+  accessible name string.
+- When checking images for alt text, the correct accessibility check is whether the
+  `alt` ATTRIBUTE EXISTS (`img.get_attribute("alt") is not None`), not whether it is
+  non-empty. `alt=""` (present but empty) is the correct, deliberate WCAG pattern for
+  purely decorative images and must PASS. Only a genuinely MISSING alt attribute
+  (`get_attribute("alt")` returns `None`) is a real violation. Do not flag `alt=""` as
+  a failure -- that produces a false positive on sites that correctly mark decorative
+  images this way.
+- Most Playwright action/wait methods (`wait_for_load_state`, `goto`, `click`, `fill`,
+  `wait_for_selector`, etc.) return `None` on success. They signal failure by RAISING
+  an exception (e.g. a timeout error), not by returning a falsy value. NEVER wrap these
+  in `assert method_call(...)` -- `assert page.wait_for_load_state(...)` will fail even
+  on success, since `None` is falsy. Call these as plain statements; if the condition
+  isn't met in time, Playwright raises automatically and pytest already treats an
+  uncaught exception as a failure -- no extra assert is needed or correct. Only wrap a
+  call in `assert` when its documented return type is genuinely a boolean (e.g.
+  `locator.is_visible()`, `locator.is_checked()`).
+
+The script MUST:
+- Use the SYNCHRONOUS pytest-playwright API (NOT async/await, NOT playwright.async_api)
+- Use the built-in `page` fixture provided automatically by the pytest-playwright plugin
+- Follow pytest naming conventions (test_* functions), using plain `def`, never `async def`
+- Only reference navigation text, headings, class names, or links that appear in the
+  REAL PAGE STRUCTURE above. If a BDD scenario references something not confirmed to
+  exist on the page (e.g. a hypothetical "deleted repo" link or a "certificate" link
+  not seen above), write that test as a general robustness/negative check (e.g. "no
+  broken links found", "no console errors") rather than asserting a specific unverified
+  element is present
+- Use `from playwright.sync_api import expect` for assertions where appropriate
+- Include a short docstring on each test function mapping it back to its BDD scenario
+- Be ready to run as-is with: pytest <script_name> -v
+
+BDD Cases:
+{bdd_cases}
+
+Generate ONLY the complete Python script -- no explanations, no markdown code fences."""
+    raw = _llm_text(get_llm(), prompt, node_name=node_name)
+    return _strip_code_fences(raw)
+
+
+def generate_grounded_script_for_story(story_id: str, test_type: str, bdd_cases: str, page_facts: dict) -> tuple[Path, bool]:
+    """Phase 2a equivalent of generate_script_for_story -- same caching rule
+    (smoke/regression reuse a valid cached script; sanity/exploratory always
+    regenerate), but writes to tests/phase2/ and uses the DOM-grounded prompt.
+    """
+    tests_dir = PROJECT_DIR / "tests" / "phase2"
+    tests_dir.mkdir(parents=True, exist_ok=True)
+    script_path = tests_dir / f"test_{story_id}.py"
+
+    if test_type in ("smoke", "regression") and _is_valid_script(script_path):
+        print(f"  [{story_id}] {test_type}: cached (phase2) script exists, reusing {script_path.name}")
+        return script_path, True
+
+    print(f"  [{story_id}] {test_type}: generating DOM-grounded script...")
+    script_code = _generate_grounded_playwright_script(bdd_cases, page_facts, node_name=f"phase2_codegen_{story_id}")
+
+    if not _is_valid_script_content(script_code):
+        raise RuntimeError(
+            f"LLM returned an empty or invalid phase2 script for story '{story_id}' "
+            f"({len(script_code.strip())} chars, 'def test_' present: {'def test_' in script_code})."
+        )
+
+    script_path.write_text(script_code, encoding="utf-8")
+    print(f"  [{story_id}] saved {script_path.name}")
+    return script_path, False
+
+
 def process_single_story(user_story_text: str, story_id: str) -> QAState:
     """Run one story through Supervisor -> TestCaseGenAgent -> TestCaseReviewAgent.
 
@@ -965,7 +1177,7 @@ def process_single_story(user_story_text: str, story_id: str) -> QAState:
     return state
 
 
-def run_batch(story_filter: str | None = None, seed: bool = False) -> None:
+def run_batch(story_filter: str | None = None, seed: bool = False, phase: str = "phase1") -> None:
     """CI/CD-style batch entry point.
 
     Args:
@@ -976,6 +1188,12 @@ def run_batch(story_filter: str | None = None, seed: bool = False) -> None:
               stories from data/portfolio_content.json and re-indexes the
               vector DB. Off by default so a normal batch run doesn't
               regenerate stories/embeddings every time.
+        phase: "phase1" (default) uses the original ungrounded codegen.
+               "phase2" scans the real target page once, then uses the
+               DOM-grounded codegen for every story -- see design doc
+               Section 9.1. Scripts/logs are written to tests/<phase>/ and
+               outputs/test_results/<phase>/ respectively, so both phases'
+               output sit side by side for the same story id.
     """
     if seed:
         print("Running setup: generating user stories + seeding vector DB...\n")
@@ -995,11 +1213,26 @@ def run_batch(story_filter: str | None = None, seed: bool = False) -> None:
         if not story_files:
             raise SystemExit(f"Story id '{story_filter}' not found under user_stories/.")
 
+    page_facts = None
+    if phase == "phase2":
+        print(f"Scanning real target page ({TARGET_APP_URL}) once for all stories in this run...\n")
+        try:
+            page_facts = scan_target_page(TARGET_APP_URL)
+            print(f"Scan complete: {len(page_facts['nav_links'])} nav links, "
+                  f"{page_facts['images_total']} images ({page_facts['images_missing_alt']} missing alt), "
+                  f"{len(page_facts['external_links'])} external links found.\n")
+        except Exception as e:
+            raise SystemExit(
+                f"Failed to scan {TARGET_APP_URL} for phase2 grounding: {e}\n"
+                f"Ensure Playwright browsers are installed (playwright install chromium) "
+                f"and the target URL is reachable."
+            )
+
     results = []
     for path in story_files:
         metadata, body = parse_story_file(path)
         story_id = metadata.get("id", path.stem)
-        print(f"\n{'='*70}\nProcessing: {story_id}\n{'='*70}")
+        print(f"\n{'='*70}\nProcessing: {story_id} ({phase})\n{'='*70}")
 
         try:
             state = process_single_story(body, story_id)
@@ -1013,10 +1246,15 @@ def run_batch(story_filter: str | None = None, seed: bool = False) -> None:
                 continue
 
             test_type = state.get("test_type", "sanity")
-            script_path, cached = generate_script_for_story(story_id, test_type, state.get("bdd_cases", ""))
+            if phase == "phase2":
+                script_path, cached = generate_grounded_script_for_story(
+                    story_id, test_type, state.get("bdd_cases", ""), page_facts
+                )
+            else:
+                script_path, cached = generate_script_for_story(story_id, test_type, state.get("bdd_cases", ""))
 
             print(f"  [{story_id}] running pytest...")
-            execution_result, _, log_path = _run_pytest_script(script_path, log_name=story_id)
+            execution_result, _, log_path = _run_pytest_script(script_path, log_name=story_id, phase=phase)
 
             results.append({
                 "story_id": story_id,
@@ -1046,7 +1284,7 @@ def run_batch(story_filter: str | None = None, seed: bool = False) -> None:
             })
             continue
 
-    print(f"\n\n{'='*70}\nBATCH SUMMARY\n{'='*70}")
+    print(f"\n\n{'='*70}\nBATCH SUMMARY ({phase})\n{'='*70}")
     print(f"{'Story ID':<22} {'Type':<12} {'Result':<8} {'Script (cached?)':<40} Log")
     print("-"*70)
     for r in results:
@@ -1056,7 +1294,7 @@ def run_batch(story_filter: str | None = None, seed: bool = False) -> None:
     passed = sum(1 for r in results if r["execution_result"] == "pass")
     errored = sum(1 for r in results if r["execution_result"] == "error")
     print(f"\nTotal: {len(results)} stories processed. {passed} passed, {errored} errored, {len(results) - passed - errored} failed/blocked.")
-    print(f"Full pytest logs saved under: {(OUTPUTS_DIR / 'test_results').relative_to(PROJECT_DIR)}/")
+    print(f"Full pytest logs saved under: {(OUTPUTS_DIR / 'test_results' / phase).relative_to(PROJECT_DIR)}/")
 
 
 def batch_main(argv=None) -> None:
@@ -1086,6 +1324,13 @@ def batch_main(argv=None) -> None:
         default=None,
         help="Batch mode: process only this story id (default: all stories under user_stories/).",
     )
+    parser.add_argument(
+        "--phase2",
+        action="store_true",
+        help="Batch mode: use Phase 2a DOM-grounded codegen (scans the real target page first) "
+             "instead of Phase 1's ungrounded codegen. Writes to tests/phase2/ and "
+             "outputs/test_results/phase2/ so both phases' output are directly comparable.",
+    )
     args = parser.parse_args(argv)
 
     global AUTO_APPROVE
@@ -1095,7 +1340,7 @@ def batch_main(argv=None) -> None:
         result = run_workflow(args.user_story)
         print(f"\n✓ Workflow complete. Report: {result.get('output_path')}")
     else:
-        run_batch(story_filter=args.story, seed=args.seed)
+        run_batch(story_filter=args.story, seed=args.seed, phase="phase2" if args.phase2 else "phase1")
 
 
 if __name__ == "__main__":

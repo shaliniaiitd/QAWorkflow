@@ -236,6 +236,66 @@ outputs/test_results/
 
 Phase 1 code (`generate_script_for_story`, `execution_agent`, `_run_pytest_script`) writes under the `phase1/` subfolder; Phase 2 code (once built) writes under `phase2/`, using the *same* story ID so a single story's before/after logs and scripts sit side by side for direct comparison.
 
+### 9.1.2 Phase 2a Results — Validated Against `projects_1`
+
+Built `scan_target_page()` (Playwright sync API, one scan per batch run since every story targets the same single-page site) and `generate_grounded_script_for_story()`, feeding real nav text, headings, image alt-text state, external links, and a CSS-class sample into the codegen prompt instead of letting the model guess. First real run, same story as the Section 9.0 baseline:
+
+| | Phase 1 (ungrounded) | Phase 2a (DOM-grounded) |
+|---|---|---|
+| Result | 7 failed, 2 passed | 6 failed, 2 passed, 1 skipped |
+| **Fabricated-selector failures** (element simply doesn't exist) | 3 | **0** |
+
+The headline result: **Phase 2a eliminated the fabricated-selector failure category entirely** — the specific problem it was built to solve. The remaining failures are categorically different, and worth being honest about rather than declaring premature victory:
+
+| Failure | What actually happened | Category |
+|---|---|---|
+| Missing `alt` text on an image | Correctly flagged, matches what the scan detected | **Genuine finding** — grounding working as intended |
+| Content overflow at 320px viewport | Plausible real responsive-design bug | **Genuine finding** |
+| Nav link list wrong order/count in an assertion | Model was given the correct 8 real links but mis-transcribed them into the assertion | **Data-fidelity slip**, not fabrication — the underlying data was right, the transcription wasn't |
+| `Locator.all_attribute_values(...)` called | This method doesn't exist in Playwright's sync API | **API hallucination** — DOM grounding doesn't ground the *API surface*; a separate problem |
+| LinkedIn `999` still asserted as `== 200/404` | Prompt included a prose rule about bot-blocking domains; model didn't apply it | **Instruction-following miss** — a single specific rule buried in prose prompt text isn't reliably followed |
+| `has_text="Work"` matched "Frameworks" too | Playwright's `has_text` does substring matching by default; needs `exact=True` | **Known Playwright gotcha**, not LLM-specific — would trip up hand-written tests too |
+
+**Fixes applied in response, same session:**
+- Nav links are now passed to the prompt as a literal Python list (`repr()`), not comma-joined prose — removing the transcription-error surface entirely rather than hoping the model copies prose correctly
+- The bot-domain status-code rule is now given as **literal, copy-pasteable code** (a small `is_healthy_status()` helper) the model is instructed to include verbatim, rather than a prose rule to remember and apply correctly on its own
+- The prompt now explicitly names the correct Playwright pattern for multi-element attribute extraction (loop + `.get_attribute()`) and calls out `all_attribute_values` as nonexistent, plus requires `exact=True` on `has_text` filters
+
+**Conclusion:** DOM grounding is validated as solving the problem it targeted. What's left (API hallucination, prose-instruction reliability, a classic Playwright gotcha) is real but distinct — worth hardening further, but not evidence against the 2a approach itself. Re-running after the prompt fixes above to confirm they land is a natural next check before considering 2a "done."
+
+### 9.1.3 Second Run — After `reasoning_effort` and Prompt Fixes
+
+Re-ran after fixing the Groq reasoning-token-budget issue (Section 12.1.1) and applying the 9.1.2 prompt fixes:
+
+| | Phase 1 | Phase 2a run 1 | Phase 2a run 2 |
+|---|---|---|---|
+| Result | 7 failed, 2 passed | 6 failed, 2 passed, 1 skipped | **4 failed, 3 passed** |
+| LinkedIn `999` handling | Failed | Failed (prose rule ignored) | **Passed** — code-injection fix validated |
+
+The literal-code-over-prose fix for bot-domain handling is now confirmed working, not just theorized.
+
+**Findings now cross-confirmed across all three independent runs** (same real issues surfacing regardless of how the test was generated — strong signal these are genuine site bugs, not script artifacts):
+- Missing `alt` **attribute** on the hero image (`qa-ai-hero.png`) — confirmed via direct fetch of the live page. This is a decorative image (confirmed with the site owner), so the correct fix is `alt=""` on the live site, not a descriptive caption.
+- Horizontal overflow (~381px content within a 300–320px viewport)
+
+**A more precise finding than first reported:** the generated accessibility check itself was too blunt — it flagged any empty-or-missing `alt` as a failure, which would produce a **false positive** once the site is correctly fixed with `alt=""` (the deliberate, WCAG-correct pattern for decorative images). `scan_target_page()` and the codegen prompt were both updated to check whether the `alt` **attribute exists at all** (`get_attribute("alt") is not None`), not whether it's non-empty — matching how real automated accessibility tools (e.g. axe-core) actually define this check. Only a genuinely absent attribute is a violation; `alt=""` on a decorative image now correctly passes.
+
+**Two new failure types surfaced, both narrower and more specific than the original failure set — a legitimate sign of iterative narrowing, not a new instance of the same problem:**
+
+1. **A grounding gap, not a hallucination:** the brand/logo link test guessed an accessible name (`"SA\nShalini Agarwal"`) that didn't match the real one (`"Shalini Agarwal home"`, from an `aria-label`). `scan_target_page()` currently captures visible inner text only; `get_by_role(name=...)` matches against the *accessible name*, which can differ whenever `aria-label` is present. Documented as a Phase 2a.1 refinement (extend the scan to also capture `aria-label`s) rather than fixed immediately — proportionate to flag, not urgent enough to block on.
+2. **A second hallucinated Playwright method:** `LocatorAssertions.to_have_count_greater_than` (doesn't exist; real Playwright only has exact `to_have_count(n)`). Confirms that naming individual hallucinated methods one at a time (as done for `all_attribute_values`) doesn't scale. **Fix applied:** a general instruction was added — when uncertain a fluent-assertion method exists exactly as named, use `.count()` plus a plain Python `assert` instead of guessing at a method name. This is a more durable fix than whack-a-mole naming each hallucination as it's discovered.
+
+**Updated conclusion:** the trajectory across three runs is a legitimate improvement story for a portfolio: fabricated-selector failures went to zero in run 1, a validated instruction-following fix landed in run 2, and the remaining failure surface keeps narrowing to smaller, more specific, more tractable problems (an aria-label edge case, a single hallucinated method) rather than repeating the original broad "model doesn't know the DOM" failure mode. Two of the four current failures are now confirmed real site issues worth fixing on the live site itself, independent of this project.
+
+### 9.1.4 Third Run — Confirms a Recurring Category, Not Isolated Bugs
+
+After fixing the alt-text check semantics (and the site's live `alt=""` fix), re-ran once more. Non-determinism means this run's BDD content didn't happen to include an alt-text scenario at all (expected, given `assign_test_type`'s stub always returns "sanity" and temperature 0.2 regenerates content every run — see Section 8 caveat), so the alt-text fix couldn't be directly re-confirmed this specific run. What it did surface:
+
+- **The invented-negative-scenario fix is holding:** a "broken GitHub link" test — exactly the kind of speculative scenario the prompt now steers toward a general robustness check — passed cleanly.
+- **A third Playwright API misunderstanding, but a more general one:** `assert page.wait_for_load_state("load", timeout=2000)` failed even though the page loaded successfully, because `wait_for_load_state` returns `None` on success — Playwright signals failure by *raising*, not by a falsy return value. This is the same underlying category as the two prior hallucinations (assuming a method communicates success via return value when Playwright's actual convention is "no exception = success"), but general enough that patching one method name wouldn't have helped.
+
+**Fix applied:** rather than naming `wait_for_load_state` specifically, the prompt now states the general Playwright convention — most action/wait methods return `None` on success and signal failure via exception, so they should never be wrapped in `assert`; only genuinely boolean-returning methods (`is_visible()`, `is_checked()`) should be. This is the same escalation pattern as the `to_have_count_greater_than` fix: three instances of "model assumes a Playwright method returns a meaningful truthy value" is enough to treat it as a category worth a standing rule, not a one-off correction each time a new example surfaces.
+
 ### 9.2 HITL in app.py
 
 Phase 1's CLI `input()` prompts are replaced with an approval UI surfaced through `app.py` (FastAPI backend) and the React/Vite frontend — the interrupt payload (what needs approving, at which gate) is returned to the frontend instead of printed to stdout, and the resume decision comes back as an API call instead of a keypress. The underlying `interrupt()`/`Command(resume=...)`/checkpointer mechanism from Section 6.4 doesn't change — only what triggers the resume changes.
@@ -284,6 +344,12 @@ The local model backing every node is small (0.5B parameters), and that has conc
 - **Reasoning depth for judgment-heavy nodes.** HealingAgent's job ("diagnose why this failed, propose a fix") is qualitatively harder than schema-shaped generation (writing a BDD case). A 0.5B model may produce shallow or generic diagnoses where a larger model would reason more concretely about the actual failure. **Mitigation:** extend the existing guardrail pattern — validate `healing_proposed` output shape and specificity before acting on it, same retry-on-failure treatment `validate_bdd` already gets. If output quality proves insufficient once built and tested, consider a mixed-model setup: keep `qwen2.5-coder:0.5b` for cheap, schema-shaped generation (BDD writing), but point HealingAgent's diagnosis step at a larger local model via Ollama (e.g. a 7B variant) — Ollama makes per-call model swaps cheap, so this is a config change, not a redesign.
 - **Long-context degradation.** Nodes that combine static memory + dynamic memory + retrieved context + user story into one prompt (`analyze_story`, `generate_bdd`) risk quality drop-off as that combined prompt grows, more so at 0.5B than at larger scale. **Mitigation:** watch prompt length as new agents are added; keep each agent's prompt scoped to only the state fields it actually needs (already partially enforced via `PROMPT_FIELDS`).
 - **Validate before building around it.** Before writing HealingAgent's retry/guardrail logic, worth manually running a handful of representative diagnosis prompts against the 0.5B model to see whether this is a real problem to design around or a hypothetical one — empirical check is cheaper than architecting defensively against an untested assumption.
+
+### 12.1.1 Reasoning-model token budgets (Groq `openai/gpt-oss-20b`)
+
+A related but distinct risk surfaced when using the Groq-hosted fallback: reasoning models spend part of their token budget on **hidden reasoning tokens** before producing the final answer. `max_tokens` caps the combined budget, not just the visible output — so a longer or more complex prompt (e.g. Phase 2a's DOM-grounded codegen, with a literal nav list and a code block to include) can cause the model to spend its entire allotment reasoning and return **empty final content**, even though the call succeeds with no error. This is not the same failure as a rate limit or a network error — it's silent and looks like the model simply didn't answer.
+
+**Fix:** `reasoning_effort="low"` (supported by `openai/gpt-oss-20b`/`120b` specifically, via `langchain-groq`'s `ChatGroq` constructor) reduces the hidden-reasoning share of the budget directly, rather than just raising `max_tokens` and hoping it's enough headroom. For codegen-from-structured-input tasks like this project's, low reasoning effort is appropriate — the task is mechanical transformation, not open-ended problem-solving. Worth remembering as a class of bug distinct from the more familiar "just raise max_tokens" fix: if a Groq reasoning-model call ever returns empty again, check `reasoning_effort` before assuming it's purely a token-ceiling issue.
 
 ### 12.2 Static memory / context drift
 
