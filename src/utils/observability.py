@@ -8,8 +8,8 @@ Same discipline, different subject.
 Two layers, independent of each other:
 
 1. LangSmith tracing (@traceable) -- rich, hierarchical traces viewable in
-   the LangSmith UI (which node called which LLM with what prompt, nested
-   under the parent workflow run). Opt-in, zero-config-safe: with no env
+    the LangSmith UI (which node called which LLM with redacted prompt and
+    response data, nested under the parent workflow run). Opt-in, zero-config-safe: with no env
    vars set, @traceable is a transparent no-op -- your code runs exactly
    as before, nothing is uploaded, nothing breaks. To actually see traces:
 
@@ -38,14 +38,41 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.utils.guardrails import redact_pii
+
 try:
-    from langsmith import traceable
+    from langsmith import traceable as _langsmith_traceable
 except ImportError:  # pragma: no cover
-    def traceable(*_args: Any, **_kwargs: Any):
+    def _langsmith_traceable(*_args: Any, **_kwargs: Any):
         """Fallback if langsmith isn't installed: decorator becomes a no-op."""
         def decorator(fn):
             return fn
         return decorator
+
+
+def _redact_trace_value(value: Any) -> Any:
+    """Redact PII recursively from values before LangSmith serializes them."""
+    if isinstance(value, str):
+        return redact_pii(value)
+    if isinstance(value, dict):
+        return {key: _redact_trace_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_trace_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_trace_value(item) for item in value)
+    return value
+
+
+def _redact_trace_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """LangSmith process hook for both traced inputs and outputs."""
+    return _redact_trace_value(payload)
+
+
+def traceable(*args: Any, **kwargs: Any):
+    """Trace calls only after redacting PII from their exported payloads."""
+    kwargs.setdefault("process_inputs", _redact_trace_payload)
+    kwargs.setdefault("process_outputs", _redact_trace_payload)
+    return _langsmith_traceable(*args, **kwargs)
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 LOG_FILE = PROJECT_DIR / "observability_log.jsonl"

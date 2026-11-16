@@ -1,0 +1,62 @@
+{
+  "dataset_name": "qa_workflow_portfolio_golden_dataset",
+  "description": "Fabricated but grounded dataset for retrieval and answer-quality checks on the portfolio QA workflow.",
+  "entries": [
+    {
+      "id": "education_1",
+      "query": "What is Shalini's academic background and degree information?",
+      "expected_section": "education",
+      "expected_keywords": ["Bachelor", "Master", "degree", "institute", "academic"],
+      "golden_answer": "Shalini's portfolio highlights her educational background, including degree details and the institute context that frames her academic progression."
+    },
+    {
+      "id": "projects_1",
+      "query": "Tell me about the projects and data work she has delivered.",
+      "expected_section": "projects",
+      "expected_keywords": ["projects", "data", "pipeline", "cloud", "analytics"],
+      "golden_answer": "The project portfolio covers data-intensive work, engineering delivery, and analytics-oriented problem solving across multiple client contexts."
+    },
+    {
+      "id": "skills_1",
+      "query": "What technical skills are highlighted in the portfolio?",
+      "expected_section": "skills",
+      "expected_keywords": ["skills", "cloud", "DevOps", "database", "tooling"],
+      "golden_answer": "The skills section covers cloud, DevOps, database, and tooling breadth relevant to modern engineering and data delivery work."
+    },
+    {
+      "id": "frameworks_1",
+      "query": "Which frameworks or delivery patterns are emphasized?",
+      "expected_section": "frameworks_delivered",
+      "expected_keywords": ["framework", "delivery", "schema", "validation", "design"],
+      "golden_answer": "The frameworks section focuses on reusable design frameworks, validation patterns, and delivery practices that support dependable implementation."
+    },
+    {
+      "id": "training_1",
+      "query": "What training and certifications are listed?",
+      "expected_section": "training_certifications",
+      "expected_keywords": ["training", "certification", "AI", "Generative AI", "learning"],
+      "golden_answer": "The training and certifications section includes AI and Generative AI learning material and formal certification-oriented development work."
+    },
+    {
+      "id": "recognition_1",
+      "query": "How is recognition and mentoring described in the portfolio?",
+      "expected_section": "recognition",
+      "expected_keywords": ["recognition", "mentoring", "client", "feedback"],
+      "golden_answer": "Recognition content emphasizes client feedback, mentoring impact, and credible acknowledgment of leadership and contribution."
+    },
+    {
+      "id": "work_experience_1",
+      "query": "What does the work experience section emphasize?",
+      "expected_section": "work_experience",
+      "expected_keywords": ["experience", "leadership", "engagement", "client"],
+      "golden_answer": "The work experience section centers on client-facing delivery, leadership across engagements, and multi-context execution."
+    },
+    {
+      "id": "projects_2",
+      "query": "Which portfolio entries show large-scale data and validation experience?",
+      "expected_section": "projects",
+      "expected_keywords": ["large", "scale", "data", "validation"],
+      "golden_answer": "The project section includes examples of large-scale data validation and engineering work relevant to enterprise-grade delivery."
+    }
+  ]
+}

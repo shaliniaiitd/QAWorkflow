@@ -54,7 +54,7 @@ from langchain_core.runnables import RunnableConfig
 from src.utils.vector_store import retrieve_similar_stories
 from src.utils.vector_store import add_story_to_db
 from src.utils.observability import traceable, timed_call, log_llm_call
-from src.utils.guardrails import screen_user_story, check_bdd_output_schema
+from src.utils.guardrails import redact_pii, screen_user_story, check_bdd_output_schema
 
 
 try:
@@ -224,7 +224,7 @@ def assemble_report(state: QAState) -> QAState:
 
 def save_report(state: QAState) -> QAState:
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_FILE.write_text(state.get("final_report", ""), encoding="utf-8")
+    OUTPUT_FILE.write_text(redact_pii(state.get("final_report", "")), encoding="utf-8")
     return {"output_path": str(OUTPUT_FILE)}
 
 def retrieve_memory(state: QAState) -> QAState:

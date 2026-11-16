@@ -39,6 +39,7 @@ How to run:
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
 import re
@@ -61,7 +62,7 @@ from langchain_groq import ChatGroq
 from langchain_core.runnables import RunnableConfig
 from src.utils.vector_store import retrieve_similar_stories
 from src.utils.observability import traceable, timed_call, log_llm_call
-from src.utils.guardrails import screen_user_story, check_bdd_output_schema
+from src.utils.guardrails import redact_pii, screen_user_story, check_bdd_output_schema
 from seed_vector_db import parse_story_file  # reuse the same frontmatter parser seed_vector_db.py uses
 
 try:
@@ -124,6 +125,8 @@ class QAState(TypedDict, total=False):
     healing_proposed: str  # description of proposed fix
     healing_applied: bool
     healing_attempts: int  # number of heal→approve→execute cycles attempted
+    healing_script: str
+    execution_script_path: str
 
     # Final output
     final_report: str
@@ -444,34 +447,58 @@ def _run_pytest_script(script_path: Path, log_name: str, timeout: int = 120, pha
     results_dir.mkdir(parents=True, exist_ok=True)
     log_path = results_dir / f"{log_name}.log"
 
-    lines: list[str] = []
+    command = [sys.executable, "-m", "pytest", str(script_path), "-v", "-x", "--tb=short"]
+    started_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    lines: list[str] = [
+        f"Run started: {started_at}\n",
+        f"Working directory: {PROJECT_DIR}\n",
+        f"Command: {' '.join(command)}\n",
+        "=" * 80 + "\n",
+    ]
     returncode = -1
+    log_path.write_text("".join(lines), encoding="utf-8")
     try:
-        process = subprocess.Popen(
-            ["pytest", str(script_path), "-v", "--tb=short"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        start = time.time()
-        for line in process.stdout:
-            print(line, end="")  # live on console
-            lines.append(line)
-            if time.time() - start > timeout:
-                process.kill()
-                lines.append(f"\n[Timeout] Killed after {timeout}s.\n")
-                break
-        process.wait(timeout=5)
-        returncode = process.returncode
+        with log_path.open("a", encoding="utf-8") as log_file:
+            process = subprocess.Popen(
+                command,
+                cwd=PROJECT_DIR,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            start = time.time()
+            for line in process.stdout:
+                print(line, end="")
+                lines.append(line)
+                log_file.write(redact_pii(line))
+                log_file.flush()
+                if time.time() - start > timeout:
+                    process.kill()
+                    timeout_line = f"\n[Timeout] Killed after {timeout}s.\n"
+                    print(timeout_line, end="")
+                    lines.append(timeout_line)
+                    log_file.write(timeout_line)
+                    log_file.flush()
+                    break
+            process.wait(timeout=5)
+            returncode = process.returncode
     except FileNotFoundError:
-        lines.append("pytest not found. Ensure pytest and pytest-playwright are installed.\n")
+        error_line = "Python executable or pytest module not found. Check the active environment.\n"
+        lines.append(error_line)
+        log_path.write_text("".join(lines), encoding="utf-8")
     except Exception as e:
-        lines.append(f"Error running pytest: {e}\n")
+        error_line = f"Error running pytest: {e}\n"
+        lines.append(error_line)
+        with log_path.open("a", encoding="utf-8") as log_file:
+            log_file.write(redact_pii(error_line))
 
     execution_result = "pass" if returncode == 0 else "fail"
-    full_log = "".join(lines)
-    log_path.write_text(full_log, encoding="utf-8")
+    finished_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    footer = f"\n{'=' * 80}\nRun finished: {finished_at}\nExit code: {returncode} ({execution_result})\n"
+    lines.append(footer)
+    with log_path.open("a", encoding="utf-8") as log_file:
+        log_file.write(footer)
 
     summary = (
         f"Pytest completed with return code {returncode} ({execution_result}). "
@@ -491,29 +518,34 @@ def execution_agent(state: QAState) -> QAState:
     
     In Phase 2, this becomes live/scriptless tool-calling (Playwright MCP).
     """
-    print("\n[ExecutionAgent] Generating test script from BDD...")
-    
     run_id = state.get("run_id", "unknown")
-    bdd_cases = state.get("bdd_cases", "")
-    
-    script_code = _generate_playwright_script(bdd_cases, node_name="execution_agent_codegen")
-    
-    # Save script to tests/phase1/ folder (Phase 2 will write to tests/phase2/,
-    # same story id, so before/after scripts sit side by side -- see design doc 9.1.1)
-    tests_dir = PROJECT_DIR / "tests" / "phase1"
-    tests_dir.mkdir(parents=True, exist_ok=True)
-    script_path = tests_dir / f"test_generated_{run_id}.py"
-    
-    script_path.write_text(script_code, encoding="utf-8")
-    print(f"✓ Test script saved to {script_path}")
-    
+    script_path_value = state.get("execution_script_path")
+    if script_path_value:
+        script_path = Path(script_path_value)
+        print(f"\n[ExecutionAgent] Rerunning approved healing candidate: {script_path}")
+    else:
+        print("\n[ExecutionAgent] Generating test script from BDD...")
+        script_code = _generate_playwright_script(
+            state.get("bdd_cases", ""), node_name="execution_agent_codegen"
+        )
+        tests_dir = PROJECT_DIR / "tests" / "phase1"
+        tests_dir.mkdir(parents=True, exist_ok=True)
+        script_path = tests_dir / f"test_generated_{run_id}.py"
+        script_path.write_text(script_code, encoding="utf-8")
+        print(f"✓ Test script saved to {script_path}")
+
     print(f"✓ Running tests via pytest...")
     execution_result, execution_log, log_path = _run_pytest_script(script_path, log_name=f"run_{run_id}")
+    try:
+        execution_log = log_path.read_text(encoding="utf-8", errors="replace")[-12000:]
+    except OSError:
+        pass
     
     print(f"✓ Execution result: {execution_result} (full log: {log_path})")
     return {
         "execution_result": execution_result,
         "execution_log": execution_log,
+        "execution_script_path": str(script_path),
     }
 
 
@@ -521,7 +553,7 @@ def route_after_execution(state: QAState) -> str:
     if state.get("execution_result") == "pass":
         return "report_agent"
     else:
-        return "pre_healing_hitl"
+        return "healing_agent"
 
 
 # ============================================================================
@@ -529,31 +561,31 @@ def route_after_execution(state: QAState) -> str:
 # ============================================================================
 
 def pre_healing_hitl(state: QAState) -> QAState:
-    """HITL Gate 1: Approve healing fix before applying?
-    
-    Also checks: have we exceeded MAX_HEALING_ATTEMPTS? If so, skip healing and go to report.
-    """
+    """HITL Gate 1: approve a prepared healing candidate before applying it."""
     healing_attempts = state.get("healing_attempts", 0)
-    
-    if healing_attempts >= MAX_HEALING_ATTEMPTS:
-        print("\n" + "="*70)
-        print(f"HEALING ATTEMPT LIMIT REACHED ({MAX_HEALING_ATTEMPTS} attempts)")
-        print("="*70)
-        print(f"\nGiving up on automatic healing after {MAX_HEALING_ATTEMPTS} attempts.")
-        print("Proceeding to final report without further healing.")
-        return {
-            "hitl_gate": "pre_healing_limit_reached",
-            "hitl_decision": "reject",
-        }
-    
     print("\n" + "="*70)
     print("HITL GATE 1: Pre-Healing Approval")
-    print(f"(Healing attempt {healing_attempts + 1}/{MAX_HEALING_ATTEMPTS})")
+    print(f"(Healing attempt {healing_attempts}/{MAX_HEALING_ATTEMPTS})")
     print("="*70)
-    print(f"\nExecution Failed. Diagnosis:")
-    print(f"{state.get('healing_proposed', 'No diagnosis yet')}")
+    print(f"\nDiagnosis and proposal:\n{state.get('healing_proposed', 'No diagnosis available')}")
+    original_path = state.get("execution_script_path", "")
+    candidate = state.get("healing_script", "")
+    if original_path and candidate:
+        try:
+            original = Path(original_path).read_text(encoding="utf-8", errors="replace").splitlines()
+            revised = candidate.splitlines()
+            diff = list(difflib.unified_diff(original, revised, fromfile="current", tofile="proposed", lineterm=""))
+            print("\nProposed script changes:")
+            print("\n".join(diff[:100]) or "(no textual changes)")
+        except OSError:
+            print("\nThe proposed script could not be compared with the current script.")
+    elif not candidate:
+        print("\nNo safe revised script was generated; the workflow will continue to the report.")
+
+    if not candidate:
+        return {"hitl_gate": "pre_healing", "hitl_decision": "reject"}
     if AUTO_APPROVE:
-        print("\nAuto-approve enabled: approving healing fix.")
+        print("\nAuto-approve enabled: approving the proposed script changes.")
         decision = "approve"
     else:
         print("\nDo you approve this fix? (Y/N): ", end="", flush=True)
@@ -568,7 +600,7 @@ def pre_healing_hitl(state: QAState) -> QAState:
 
 def route_after_pre_healing_hitl(state: QAState) -> str:
     if state.get("hitl_decision") == "approve":
-        return "healing_agent"
+        return "apply_healing"
     else:
         # Reject or limit reached: skip healing, go straight to report
         return "report_agent"
@@ -579,37 +611,88 @@ def route_after_pre_healing_hitl(state: QAState) -> str:
 # ============================================================================
 
 def healing_agent(state: QAState) -> QAState:
-    """Rule-based diagnosis of test execution failures.
-    
-    Phase 1 Strategy: Pattern-match on common failure modes in pytest output:
-    - Selector/locator errors (xpath, css selector not found)
-    - Timeout/wait issues (element didn't appear within timeout)
-    - Assertion failures (assertion did not pass)
-    - Navigation errors (page load failed, timeout navigating)
-    
-    Proposes simple, rule-based fixes based on the detected pattern.
-    
-    Phase 2 Upgrade: Replace with LLM-based diagnosis via prompt:
-    "Given this pytest failure log, what's the root cause and what fix would you propose?"
-    LLM can then do deeper reasoning about the failure mode and suggest more nuanced fixes.
-    
-    Phase 2 will also enable HealingAgent to actually apply fixes (locator updates,
-    wait additions, etc.) and re-run ExecutionAgent automatically for tighter loops.
-    """
-    print("\n[HealingAgent] Diagnosing test failure (Phase 1: rule-based)...")
-    
+    """Diagnose the failure and prepare a reviewable, unpersisted script candidate."""
+    print("\n[HealingAgent] Diagnosing failure and preparing a candidate...")
     execution_log = state.get("execution_log", "")
-    healing_attempts = state.get("healing_attempts", 0) + 1  # Increment on entry
-    
-    # Rule-based pattern matching on common failure modes
+    healing_attempts = state.get("healing_attempts", 0)
+    log_lower = execution_log.lower()
+    if "the site configured at this address does not contain the requested file" in log_lower:
+        message = (
+            f"Target application is unavailable at {TARGET_APP_URL}: GitHub Pages returned 404. "
+            "Set TARGET_APP_URL to the deployed application's valid URL, then rerun; "
+            "no script change can repair a missing target site."
+        )
+        print(message)
+        return {"healing_proposed": message, "healing_script": "", "healing_applied": False}
+
+    if healing_attempts >= MAX_HEALING_ATTEMPTS:
+        message = f"Healing limit reached ({MAX_HEALING_ATTEMPTS} approved attempts); no further candidate generated."
+        print(message)
+        return {"healing_proposed": message, "healing_script": ""}
+
+    healing_attempts += 1
     healing_proposal = _diagnose_failure_pattern(execution_log)
-    
+    script_path = Path(state.get("execution_script_path", ""))
+    try:
+        original_script = script_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {
+            "healing_proposed": f"{healing_proposal}\nCould not read the generated test script: {exc}",
+            "healing_script": "",
+            "healing_attempts": healing_attempts,
+        }
+
+    prompt = f"""Repair the failing pytest-playwright script below using the actual pytest output.
+
+Failure diagnosis: {healing_proposal}
+
+Pytest output:
+{execution_log[-12000:]}
+
+Current script:
+{original_script}
+
+Constraints:
+- Return only a complete Python script, without markdown fences.
+- Preserve every test scenario and its intended assertions. Do not delete, skip,
+  weaken, or broadly catch failing assertions just to make the suite pass.
+- Make only a concrete mechanical correction supported by the failure output.
+- If the failure shows the requested feature is absent from the target application,
+  preserve the test and its assertion; do not pretend the application supports it.
+- Keep synchronous pytest-playwright conventions and the existing fixtures.
+"""
+    try:
+        candidate = _strip_code_fences(_llm_text(get_llm(), prompt, node_name="healing_agent"))
+    except Exception as exc:
+        candidate = ""
+        healing_proposal += f" Candidate generation failed ({type(exc).__name__})."
+
+    if not _is_valid_script_content(candidate):
+        candidate = ""
+        healing_proposal += " No valid revised pytest script was produced."
+
     print(f"Diagnosis: {healing_proposal}")
     return {
         "healing_proposed": healing_proposal,
-        "healing_applied": False,  # Phase 1 only proposes; doesn't apply
+        "healing_script": candidate,
+        "healing_applied": False,
         "healing_attempts": healing_attempts,
     }
+
+
+def apply_healing(state: QAState) -> QAState:
+    """Persist an approved candidate separately, then let ExecutionAgent rerun it."""
+    candidate = state.get("healing_script", "")
+    if not _is_valid_script_content(candidate):
+        return {"healing_applied": False, "execution_script_path": ""}
+    tests_dir = PROJECT_DIR / "tests" / "phase1"
+    tests_dir.mkdir(parents=True, exist_ok=True)
+    run_id = state.get("run_id", "unknown")
+    attempt = state.get("healing_attempts", 1)
+    script_path = tests_dir / f"test_generated_{run_id}_healed_{attempt}.py"
+    script_path.write_text(candidate, encoding="utf-8")
+    print(f"[HealingAgent] Approved candidate saved to {script_path}; rerunning tests.")
+    return {"execution_script_path": str(script_path), "healing_applied": True}
 
 
 def _diagnose_failure_pattern(log: str) -> str:
@@ -663,8 +746,7 @@ def _diagnose_failure_pattern(log: str) -> str:
 
 
 def route_after_healing_agent(state: QAState) -> str:
-    # After HealingAgent proposes, route to HITL gate for approval
-    return "pre_healing_hitl"
+    return "pre_healing_hitl" if state.get("healing_script") else "report_agent"
 
 
 # ============================================================================
@@ -698,6 +780,9 @@ def assemble_report(state: QAState) -> QAState:
 
 ## Healing Actions
 {state.get('healing_proposed', 'None')}
+
+- **Applied:** {state.get('healing_applied', False)}
+- **Executed script:** {state.get('execution_script_path', 'Not recorded')}
 
 ---
 Generated at {datetime.now().isoformat()}
@@ -749,7 +834,7 @@ def route_after_pre_publish_hitl(state: QAState) -> str:
 
 def save_report(state: QAState) -> QAState:
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_FILE.write_text(state.get("final_report", ""), encoding="utf-8")
+    OUTPUT_FILE.write_text(redact_pii(state.get("final_report", "")), encoding="utf-8")
     print(f"\n✓ Report saved to {OUTPUT_FILE}")
     return {"output_path": str(OUTPUT_FILE)}
 
@@ -779,6 +864,7 @@ def build_graph(checkpointer=None):
     graph.add_node("execution_agent", execution_agent)
     graph.add_node("pre_healing_hitl", pre_healing_hitl)
     graph.add_node("healing_agent", healing_agent)
+    graph.add_node("apply_healing", apply_healing)
     graph.add_node("report_agent", report_agent)
     graph.add_node("pre_publish_hitl", pre_publish_hitl)
     graph.add_node("save_report", save_report)
@@ -819,22 +905,29 @@ def build_graph(checkpointer=None):
         {"execution_agent": "execution_agent", "report_agent": "report_agent"},
     )
     
-    # Execution → pre-healing HITL or report
+    # Execution → diagnosis on failure, or report on success
     graph.add_conditional_edges(
         "execution_agent",
         route_after_execution,
-        {"pre_healing_hitl": "pre_healing_hitl", "report_agent": "report_agent"},
-    )
-    
-    # Pre-healing HITL → healing or report
-    graph.add_conditional_edges(
-        "pre_healing_hitl",
-        route_after_pre_healing_hitl,
         {"healing_agent": "healing_agent", "report_agent": "report_agent"},
     )
     
-    # Healing → back to pre-healing HITL (for re-approval after agent's proposal)
-    graph.add_edge("healing_agent", "pre_healing_hitl")
+    # Healing diagnosis → approval or report if no safe candidate exists
+    graph.add_conditional_edges(
+        "healing_agent",
+        route_after_healing_agent,
+        {"pre_healing_hitl": "pre_healing_hitl", "report_agent": "report_agent"},
+    )
+
+    # Pre-healing HITL → apply approved candidate or report
+    graph.add_conditional_edges(
+        "pre_healing_hitl",
+        route_after_pre_healing_hitl,
+        {"apply_healing": "apply_healing", "report_agent": "report_agent"},
+    )
+
+    # Only an approved candidate is saved and rerun
+    graph.add_edge("apply_healing", "execution_agent")
     
     # Report → pre-publish HITL
     graph.add_edge("report_agent", "pre_publish_hitl")
@@ -927,7 +1020,13 @@ def generate_script_for_story(story_id: str, test_type: str, bdd_cases: str) -> 
 
 def _is_valid_script_content(content: str) -> bool:
     """A generated script only counts as valid if it has real pytest content."""
-    return len(content.strip()) > 50 and "def test_" in content
+    if len(content.strip()) <= 50 or "def test_" not in content:
+        return False
+    try:
+        compile(content, "<generated_pytest_script>", "exec")
+    except SyntaxError:
+        return False
+    return True
 
 
 def _is_valid_script(path: Path) -> bool:
@@ -966,17 +1065,36 @@ def scan_target_page(url: str = TARGET_APP_URL, timeout_ms: int = 30000) -> dict
     facts: dict = {
         "nav_links": [], "headings": [], "images_total": 0,
         "images_missing_alt": 0, "external_links": [], "classes_sample": [],
+        "brand_accessible_name": "", "project_articles": 0,
+        "project_headings": [], "page_title": "", "meta_description": None,
+        "og_title": None, "og_description": None,
     }
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page()
         page.goto(url, wait_until="networkidle", timeout=timeout_ms)
 
-        nav_texts = page.locator("nav a, header a").all_inner_texts()
+        nav_texts = page.locator("nav a").all_inner_texts()
         facts["nav_links"] = [t.strip() for t in nav_texts if t.strip()][:15]
+        brand = page.locator("header a[aria-label]").first
+        if brand.count():
+            facts["brand_accessible_name"] = brand.get_attribute("aria-label") or ""
 
         heading_texts = page.locator("h1, h2, h3").all_inner_texts()
         facts["headings"] = [t.strip() for t in heading_texts if t.strip()][:15]
+        project_articles = page.locator("#projects article")
+        facts["project_articles"] = project_articles.count()
+        facts["project_headings"] = [
+            text.strip() for text in page.locator("#projects article h3").all_inner_texts() if text.strip()
+        ][:15]
+        facts["page_title"] = page.title()
+        for key, selector in (
+            ("meta_description", "meta[name='description']"),
+            ("og_title", "meta[property='og:title']"),
+            ("og_description", "meta[property='og:description']"),
+        ):
+            meta = page.locator(selector)
+            facts[key] = meta.get_attribute("content") if meta.count() else None
 
         images = page.locator("img").all()
         facts["images_total"] = len(images)
@@ -1021,14 +1139,26 @@ def _format_page_facts(facts: dict) -> str:
     return (
         f"Navigation link text actually found, in DOM order -- use this EXACT list,\n"
         f"do not reorder, drop, or add entries: {nav_list_literal}\n"
+        f"Separate header brand accessible name (not a navigation item): {facts.get('brand_accessible_name') or '(none found)'}\n"
         f"Headings actually found: {', '.join(facts['headings']) or '(none found)'}\n"
+        f"Projects section articles: {facts.get('project_articles', 0)}; article headings: "
+        f"{', '.join(facts.get('project_headings', [])) or '(none found)'}\n"
+        f"Page title: {facts.get('page_title') or '(none found)'}\n"
+        f"Meta description: {facts.get('meta_description') or '(not present)'}\n"
+        f"Open Graph title: {facts.get('og_title') or '(not present)'}; "
+        f"Open Graph description: {facts.get('og_description') or '(not present)'}\n"
         f"Images: {facts['images_total']} total, {facts['images_missing_alt']} missing alt text\n"
         f"External links actually found on the page: {', '.join(facts['external_links'][:10]) or '(none found)'}\n"
         f"Sample of real CSS classes present on the page: {', '.join(facts['classes_sample']) or '(none found)'}"
     )
 
 
-def _generate_grounded_playwright_script(bdd_cases: str, page_facts: dict, node_name: str) -> str:
+def _generate_grounded_playwright_script(
+    bdd_cases: str,
+    page_facts: dict,
+    node_name: str,
+    syntax_feedback: str | None = None,
+) -> str:
     """Phase 2a codegen: same contract as _generate_playwright_script, but the
     prompt is grounded in a real DOM scan instead of letting the model guess.
 
@@ -1050,6 +1180,19 @@ The target application is at: {TARGET_APP_URL}
 REAL PAGE STRUCTURE (scanned directly from the live page just now -- use this,
 do NOT invent selectors, nav text, or class names that aren't listed here):
 {facts_summary}
+
+Target-specific contract:
+- The brand is a separate header link, not an item in the primary navigation. Use its
+    scanned accessible name for the brand assertion; use only the scanned navigation list
+    inside the navigation landmark.
+- Project content is rendered as articles under `#projects`; use `#projects article`
+    and its observed headings rather than invented `.project-grid`, `.project-card`, or
+    `.tag` selectors.
+- Only test metadata keys shown as present above. Do not assume Open Graph tags exist.
+- Do not load axe-core or any other local/npm script unless its availability is
+    explicitly established. Use installed Playwright APIs and dependencies only.
+- Do not assert exact load-time thresholds unless the BDD scenario explicitly requires
+    one; page/network variability makes arbitrary timing assertions flaky.
 
 For checking external link status codes, use exactly this pattern (copy it as-is,
 do not paraphrase or simplify the bot-domain handling):
@@ -1099,6 +1242,8 @@ Playwright API correctness -- these are real, verified Playwright sync API metho
   call in `assert` when its documented return type is genuinely a boolean (e.g.
   `locator.is_visible()`, `locator.is_checked()`).
 
+{f"The previous generated script failed Python syntax validation: {syntax_feedback}. Regenerate the entire script with valid Python syntax and no trailing prose." if syntax_feedback else ""}
+
 The script MUST:
 - Use the SYNCHRONOUS pytest-playwright API (NOT async/await, NOT playwright.async_api)
 - Use the built-in `page` fixture provided automatically by the pytest-playwright plugin
@@ -1138,9 +1283,22 @@ def generate_grounded_script_for_story(story_id: str, test_type: str, bdd_cases:
     script_code = _generate_grounded_playwright_script(bdd_cases, page_facts, node_name=f"phase2_codegen_{story_id}")
 
     if not _is_valid_script_content(script_code):
+        try:
+            compile(script_code, str(script_path), "exec")
+        except SyntaxError as e:
+            syntax_feedback = f"line {e.lineno}: {e.msg}"
+            print(f"  [{story_id}] generated syntax error ({syntax_feedback}); retrying once...")
+            script_code = _generate_grounded_playwright_script(
+                bdd_cases,
+                page_facts,
+                node_name=f"phase2_codegen_{story_id}_syntax_retry",
+                syntax_feedback=syntax_feedback,
+            )
+
+    if not _is_valid_script_content(script_code):
         raise RuntimeError(
-            f"LLM returned an empty or invalid phase2 script for story '{story_id}' "
-            f"({len(script_code.strip())} chars, 'def test_' present: {'def test_' in script_code})."
+            f"LLM returned an empty, syntactically invalid, or test-free phase2 script for story '{story_id}'. "
+            "The script was not saved."
         )
 
     script_path.write_text(script_code, encoding="utf-8")
@@ -1311,7 +1469,7 @@ def batch_main(argv=None) -> None:
     )
     parser.add_argument(
         "--user-story",
-        default="As a user, I want to reset my password so I can regain access if I forget it.",
+        default="As a visitor, I want to browse the portfolio projects and their descriptions so I can evaluate the work.",
         help="User story to process. Only applies in --demo mode.",
     )
     parser.add_argument(
@@ -1332,6 +1490,13 @@ def batch_main(argv=None) -> None:
              "outputs/test_results/phase2/ so both phases' output are directly comparable.",
     )
     args = parser.parse_args(argv)
+
+    # Human-in-the-loop is the default interactive mode for the full workflow.
+    # The batch generation path remains available explicitly via --story/--seed/--phase2,
+    # but a plain command should activate the three approval gates instead of silently
+    # skipping them.
+    if not (args.demo or args.seed or args.story or args.phase2):
+        args.demo = True
 
     global AUTO_APPROVE
     AUTO_APPROVE = args.auto_approve or AUTO_APPROVE

@@ -17,11 +17,10 @@ it. Four checks now, each targeting a different risk:
 4. redact_pii() -- OUTPUT/logging. Not a safety check that blocks
    anything -- a data-minimization helper. Strips emails, phone numbers,
    and Aadhaar-shaped 12-digit numbers from text before it's logged or
-   stored, relevant under India's DPDP Act 2023 (data minimization: don't
-   retain personal data you don't need to). Note this project's current
-   observability logging already only stores character counts, not raw
-   text (see observability.py) -- redact_pii is here for if/when you
-   choose to log actual prompt/response content for debugging.
+    stored, relevant under India's DPDP Act 2023 (data minimization: don't
+    retain personal data you don't need to). It is applied to LangSmith trace
+    inputs/outputs and persisted pytest logs and reports. The local observability
+    JSONL continues to store only sizes and token counts.
 
 5. check_with_llamaguard() -- OUTPUT/INPUT, OPTIONAL. Runs Meta's
    Llama Guard model (via Ollama) as a second, model-based safety
@@ -159,10 +158,8 @@ def redact_pii(text: str) -> str:
     Data minimization -- don't retain personal data you don't need to --
     is a core principle under India's DPDP Act 2023. This is a heuristic
     redactor (emails, Indian mobile numbers, Aadhaar-shaped 12-digit
-    numbers), not a certified compliance tool. Use it before writing raw
-    prompt/response text to any log or store; this project's own
-    observability log doesn't currently store raw text at all (see
-    observability.py), so this is here for when you do.
+    numbers), not a certified compliance tool. Apply it at persistence/export
+    boundaries, not to in-memory workflow values or model inputs.
     """
     text = _EMAIL_RE.sub("[REDACTED_EMAIL]", text)
     text = _AADHAAR_RE.sub("[REDACTED_ID]", text)

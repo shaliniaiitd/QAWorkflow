@@ -8,3 +8,4 @@ readme_backup
 # IDE settings
 .idea/
 .vscode/
+.claude/settings.local.json

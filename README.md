@@ -35,6 +35,17 @@ ollama pull qwen2.5-coder:0.5b      # chat model (src/workflow.py)
 ollama pull nomic-embed-text        # embedding model (src/utils/vector_store.py)
 ```
 
+## Running tests
+
+```bash
+python -m pytest -q
+```
+
+The default suite excludes generated scripts under `tests/phase1/` and the
+Phase 2 live-site experiments under `tests/phase2/`. Generated scripts are run
+artifacts, and Phase 2 checks depend on current third-party site behavior; run
+those explicitly when validating a target deployment.
+
 ## Running it, step by step
 
 ```bash
@@ -105,6 +116,39 @@ Requires `ollama pull llama-guard3` first.
 - Expected: `GuardrailResult(passed=True, reason='')` for clean input, `passed=False` with a reason string if blocked
 - The workflow applies these automatically — a blocked user_story short-circuits to a "Blocked" report; invalid BDD output triggers up to 2 silent regeneration attempts before proceeding anyway
 
+## Hook-based guardrails and trace redaction
+
+The project uses hook-driven sanitization instead of scattering PII handling across workflow nodes.
+
+- `src/utils/guardrails.py` contains `redact_pii()` for masking emails, phone-like values, and Aadhaar-like identifiers.
+- `src/utils/observability.py` wires that sanitizer into the LangSmith `@traceable` decorator through `process_inputs` and `process_outputs`.
+- persisted artifacts such as saved reports and pytest execution logs also pass through `redact_pii()` before writing to disk.
+
+This keeps the workflow logic focused on orchestration while trace/export and persistence stay safe by construction.
+
+## Reusable skills
+
+The repository now also treats reusable generation patterns as skills instead of one-off prompts.
+
+- `skills/README.md` summarizes the skill catalog and hook model.
+- `skills/dom_grounding_prompt.md` contains the DOM-grounded Playwright generation skill.
+- this skill is used by the Phase 2a workflow path in `src/qa_workflow.py` via `scan_target_page()` plus the grounded prompt builder.
+
+The key idea is simple: when a pattern is reusable across multiple flows, keep it as a skill and let the workflow compose it rather than hard-coding prompt text directly in each node.
+
+## DeepEval roadmap
+
+The next evaluation layer is DeepEval for retrieval and LLM quality checks.
+
+- RAG evaluation: retrieval relevance, answerability, grounding, and rank stability across story queries
+- output evaluation: schema compliance, unsupported-selector detection, and factual grounding against the page or retrieved content
+- regression checks: fail fast when generated scripts invent selector names or unsupported Playwright APIs
+
+Planned artifacts:
+
+- `eval/deepeval_eval_plan.md` for the evaluation strategy
+- future eval scripts under `eval/` to score retrieval and LLM outputs consistently
+
 ## Streamlit UI
 ```bash
 streamlit run app.py
@@ -133,12 +177,17 @@ HealingAgent (rule-based failure diagnosis) → ReportAgent, with three
 human-in-the-loop approval gates (pre-execution, pre-healing, pre-publish).
 Full design rationale, diagrams, and phasing: see `QAWorkflow_Design_doc.md`.
 
+The workflow also now distinguishes between two reusable patterns:
+
+- hook patterns: trace export sanitization and persistence redaction
+- prompt skills: DOM-grounded generation and other reusable LLM prompt contracts
+
 Scripts and results are kept **separated by phase** (`tests/phase1/`,
 `tests/phase2/`, `outputs/test_results/phase1/`, `outputs/test_results/phase2/`)
 so the same story's before/after generations sit side by side, directly
 comparable — see design doc Section 9.1.2 for the actual comparison.
 
-### Batch mode (default) — CI/CD-style test generation
+### Batch mode — CI/CD-style test generation
 
 Classifies and generates (or reuses cached) pytest-playwright scripts for
 **all** user stories under `user_stories/`, without interactive HITL —
@@ -146,8 +195,8 @@ this is the "test generation" stage of a pipeline, not a full execute/heal
 run.
 
 ```bash
-# Process all user stories (default, Phase 1 ungrounded codegen)
-python -m src.qa_workflow
+# Process one story using Phase 1 ungrounded codegen
+python -m src.qa_workflow --story projects_1
 
 # Process just one story by id (matches the `id:` field in its frontmatter)
 python -m src.qa_workflow --story projects_1
@@ -161,6 +210,10 @@ python -m src.qa_workflow --seed
 python -m src.qa_workflow --phase2
 python -m src.qa_workflow --phase2 --story projects_1
 ```
+
+Running `python -m src.qa_workflow` without batch flags starts the interactive
+single-story demo with the three human approval gates. Use `--story`, `--seed`,
+or `--phase2` to select batch mode.
 
 **Caching rule:** smoke and regression test types reuse an existing script
 (`tests/<phase>/test_<story_id>.py`) if one's already been generated for that
