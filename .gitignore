@@ -1,4 +1,5 @@
 chroma_db/
+eval/myyesm/runs/
 __pycache__/
 *.pyc
 outputs/

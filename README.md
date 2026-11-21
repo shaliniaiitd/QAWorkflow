@@ -149,6 +149,17 @@ Planned artifacts:
 - `eval/deepeval_eval_plan.md` for the evaluation strategy
 - future eval scripts under `eval/` to score retrieval and LLM outputs consistently
 
+## MyYesm GenAI evaluation pilot
+
+`eval/myyesm/` contains a separate, offline-first pilot suite for evaluating
+an assistant grounded in MyYesm course pages. It includes a curated source
+snapshot, scenarios for Q&A, extraction, ambiguity, abstention, prompt
+injection, fairness, and summarization, plus a trace-scoring runner that
+produces per-run JSON/Markdown artifacts. The runner consumes system traces;
+it does not call a model or LLM judge. See
+[`eval/myyesm/README.md`](eval/myyesm/README.md) for the trace contract and
+commands.
+
 ## Streamlit UI
 ```bash
 streamlit run app.py

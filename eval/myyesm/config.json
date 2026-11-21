@@ -1,0 +1,14 @@
+{
+  "pilot_thresholds": {
+    "case_completion_rate": {"min": 1.0},
+    "retrieval_hit_rate": {"min": 0.8},
+    "context_precision": {"min": 0.7},
+    "context_recall": {"min": 0.8},
+    "fact_coverage": {"min": 0.8},
+    "required_phrase_coverage": {"min": 1.0},
+    "citation_recall": {"min": 0.8},
+    "forbidden_phrase_case_rate": {"max": 0.0},
+    "json_valid_rate": {"min": 1.0},
+    "manual_review_pending": {"max": 0.0}
+  }
+}

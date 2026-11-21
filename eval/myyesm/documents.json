@@ -1,0 +1,29 @@
+{
+  "snapshot_date": "2026-11-21",
+  "documents": [
+    {
+      "source_id": "business_analyst",
+      "title": "Business Analyst Training",
+      "url": "https://myyesm.com/business-analyst-training/",
+      "content": "The IIBA-endorsed Business Analyst program is 85 hours and is described as 8-9 weeks. It includes 8 real-time projects in Healthcare and Banking. The program is instructor-led live training, classroom and/or online. The page lists interview, resume, and marketing assistance."
+    },
+    {
+      "source_id": "data_analytics",
+      "title": "AI Driven Data Analytics",
+      "url": "https://myyesm.com/ai-data-analytics-course/",
+      "content": "The AI Driven Data Analytics course is 8 to 10 weeks. The curriculum includes Python, NumPy, pandas, Matplotlib, SQL, NoSQL, Excel, and Power BI. It includes hands-on projects and instructor-led live training, classroom and/or online."
+    },
+    {
+      "source_id": "qa_training",
+      "title": "Quality Assurance Training",
+      "url": "https://myyesm.com/qa-training/",
+      "content": "The Quality Assurance Training course is 100+ hours and approximately 9 weeks. Its curriculum includes manual testing, Selenium WebDriver, API testing with Postman and REST Assured, Git and GitHub, and SQL. The page mentions placement assistance; it does not publish a numerical job-placement rate or guarantee a job."
+    },
+    {
+      "source_id": "course_catalog",
+      "title": "Course Catalog",
+      "url": "https://myyesm.com/course/",
+      "content": "The course catalog lists Business Analyst Training, AI Driven Data Analytics, Quality Assurance Training, Advanced Java Training, QA + BA Integrated Course, and Selenium Training. The site advertises free live demos for several programs."
+    }
+  ]
+}
