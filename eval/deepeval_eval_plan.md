@@ -1,3 +1,5 @@
+# it's superseded by eval/README.md
+
 # DeepEval evaluation plan
 
 This plan is intentionally grounded in the project’s actual repository structure and content. The workflow already has deterministic retrieval evaluation in `rag_eval.py`, but it is not yet an LLM-as-judge layer.
