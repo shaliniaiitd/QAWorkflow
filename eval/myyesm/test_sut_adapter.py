@@ -51,5 +51,20 @@ class FormatContextTests(unittest.TestCase):
         )
 
 
+class RecipientVerificationTests(unittest.TestCase):
+    def test_address_present_verbatim_is_authorized(self) -> None:
+        self.assertTrue(sut_adapter.recipient_stated_verbatim(
+            "Please email this to Student@Example.com.", "Student@Example.com"
+        ))
+
+    def test_address_missing_from_query_is_rejected(self) -> None:
+        self.assertFalse(sut_adapter.recipient_stated_verbatim(
+            "Please email this to my friend.", "attacker@example.com"
+        ))
+
+    def test_empty_recipient_is_rejected(self) -> None:
+        self.assertFalse(sut_adapter.recipient_stated_verbatim("Please email this.", ""))
+
+
 if __name__ == "__main__":
     unittest.main()
