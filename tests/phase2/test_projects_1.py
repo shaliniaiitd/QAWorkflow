@@ -10,165 +10,111 @@ def is_healthy_status(url: str, status: int) -> bool:
         return status in (200, 999)  # 999 = intentional anti-bot response, not broken
     return status == 200
 
-# ---------- Helper functions ----------
-def get_external_links(page: Page):
-    return [a.get_attribute("href") for a in page.locator("a[href]").all()]
+NAV_LINKS = ["Work", "Projects", "Frameworks", "Skills", "Training", "Recognition", "Contact"]
+PROJECT_HEADINGS = [
+    "Schema-Agnostic API and Data Validation",
+    "RMBS Multi-Service QA",
+    "Big Data Validation and LLM Evaluation",
+    "BDD Regression Framework",
+    "WealthDesk Agent",
+    "AgenticQAWorkflows",
+    "Training Portal Suite",
+    "Python Self-Learning",
+    "Epex Spot Test Suite",
+    "Playwright JS POM Framework",
+    "Playwright Assignments",
+]
 
-# ---------- Tests ----------
-def test_navigation_links_visible_and_functional(page: Page):
-    """
-    Feature: Navigation visibility and functionality
-    Scenario: Navigation links are visible and work on desktop
-    """
-    page.goto("https://shaliniaiitd.github.io")
-    nav_links = [
-        "SA\nShalini Agarwal",
-        "Work",
-        "Projects",
-        "Frameworks",
-        "Skills",
-        "Training",
-        "Recognition",
-        "Contact",
-    ]
-    for link_text in nav_links:
-        link = page.get_by_role("link", name=link_text, exact=True)
-        expect(link).to_be_visible()
-    # Click Projects link
-    projects_link = page.get_by_role("link", name="Projects", exact=True)
-    projects_link.click()
-    expect(page).to_have_url("https://shaliniaiitd.github.io/#projects")
-    expect(page.locator("h2:has-text('Projects')")).to_be_visible()
+@pytest.fixture(scope="session")
+def base_url():
+    return "https://shaliniaiitd.github.io"
 
-def test_navigation_collapses_on_mobile(page: Page):
+def test_happy_path_core_content_loads_quickly_and_is_accessible(page: Page, base_url: str):
     """
-    Feature: Navigation visibility and functionality
-    Scenario: Navigation collapses on mobile and toggles correctly
+    Scenario: Happy path – All core content loads quickly and is accessible
     """
-    page.set_viewport_size({"width": 320, "height": 640})
-    page.goto("https://shaliniaiitd.github.io")
-    menu_button = page.locator(".menu-button")
-    expect(menu_button).to_be_visible()
-    menu_button.click()
-    # After clicking, navigation menu should be visible
-    nav_menu = page.locator("nav")
-    expect(nav_menu).to_be_visible()
-    # Click Contact link
-    contact_link = page.get_by_role("link", name="Contact", exact=True)
-    contact_link.click()
-    expect(page).to_have_url("https://shaliniaiitd.github.io/#contact")
-    expect(page.locator("h2:has-text('Contact')")).to_be_visible()
+    start = time.perf_counter()
+    page.goto(base_url, wait_until="load")
+    elapsed = time.perf_counter() - start
+    assert elapsed < 2, f"Page load time {elapsed:.2f}s exceeds 2s"
 
-def test_external_links_status(page: Page):
-    """
-    Feature: Accessibility compliance
-    Scenario: Site passes contrast and keyboard navigation checks
-    (General robustness check: external links are healthy)
-    """
-    page.goto("https://shaliniaiitd.github.io")
-    links = get_external_links(page)
-    for url in links:
-        if url.startswith("http"):
-            try:
-                resp = requests.head(url, allow_redirects=True, timeout=5)
-                status = resp.status_code
-            except Exception:
-                status = 0
-            assert is_healthy_status(url, status), f"Link {url} returned status {status}"
+    # Brand link
+    brand = page.get_by_role("link", name="Shalini Agarwal home", exact=True)
+    expect(brand).to_be_visible()
+    expect(brand).to_be_enabled()
 
-def test_image_alt_text(page: Page):
-    """
-    Feature: Image alt text and placeholders
-    Scenario: Project image has descriptive alt text
-    """
-    page.goto("https://shaliniaiitd.github.io")
-    # Assume project cards are within .project-grid
-    project_card = page.locator(".project-grid .project-card").first
-    img = project_card.locator("img")
-    alt = img.get_attribute("alt")
-    assert alt is not None, "Image missing alt attribute"
-    assert alt.strip() != "", "Image alt attribute is empty"
+    # Navigation links
+    for link_text in NAV_LINKS:
+        nav_link = page.get_by_role("link", name=link_text, exact=True)
+        expect(nav_link).to_be_visible()
+        expect(nav_link).to_be_enabled()
 
-def test_no_broken_github_links(page: Page):
-    """
-    Feature: Project card content
-    Scenario: Project card handles a broken GitHub link
-    (General robustness check: GitHub links are reachable)
-    """
-    page.goto("https://shaliniaiitd.github.io")
-    github_links = page.locator("a[href*='github.com']").all()
-    for link in github_links:
-        url = link.get_attribute("href")
-        if url:
-            try:
-                resp = requests.head(url, allow_redirects=True, timeout=5)
-                status = resp.status_code
-            except Exception:
-                status = 0
-            assert is_healthy_status(url, status), f"GitHub link {url} returned status {status}"
+    # Projects section
+    projects_section = page.locator("#projects")
+    expect(projects_section).to_be_visible()
+    articles = projects_section.locator("article")
+    assert articles.count() > 0, "No project articles found"
 
-def test_project_card_elements(page: Page):
-    """
-    Feature: Project card content
-    Scenario: Project card shows all required elements
-    """
-    page.goto("https://shaliniaiitd.github.io")
-    project_card = page.locator(".project-grid .project-card").first
-    title = project_card.locator(".project-title")
-    description = project_card.locator(".project-description")
-    tech_stack = project_card.locator(".project-tech-stack")
-    link = project_card.locator("a[href]")
-    expect(title).to_be_visible()
-    expect(description).to_be_visible()
-    expect(tech_stack).to_be_visible()
-    expect(link).to_be_visible()
+    for heading in PROJECT_HEADINGS:
+        article = projects_section.locator(f"article:has(h2:has-text('{heading}'))")
+        expect(article).to_have_count(1)
+        # Check for a GitHub link inside the article
+        github_link = article.locator("a[href*='github.com']")
+        expect(github_link).to_have_count(1)
+        expect(github_link).to_be_visible()
+        expect(github_link).to_be_enabled()
 
-def test_skills_page_excludes_empty_tags(page: Page):
-    """
-    Feature: Empty skill tags
-    Scenario: Rendered skill list excludes empty tags
-    """
-    page.goto("https://shaliniaiitd.github.io")
-    skills_link = page.get_by_role("link", name="Skills", exact=True)
-    skills_link.click()
-    expect(page).to_have_url("https://shaliniaiitd.github.io/#skills")
-    tags = page.locator(".skills-board .tag")
-    for tag in tags.all():
-        text = tag.inner_text().strip()
-        assert text != "", "Found an empty skill tag"
+    # External links status
+    external_links = page.locator("a[href^='http']")
+    hrefs = [el.get_attribute("href") for el in external_links.all()]
+    for href in hrefs:
+        if href is None:
+            continue
+        try:
+            resp = requests.head(href, allow_redirects=True, timeout=5)
+            status = resp.status_code
+        except Exception:
+            status = 0
+        assert is_healthy_status(href, status), f"External link {href} returned status {status}"
 
-def test_footer_last_updated_timestamp(page: Page):
+    # Images alt attribute
+    images = page.locator("img")
+    for img in images.all():
+        alt = img.get_attribute("alt")
+        assert alt is not None, f"Image {img.get_attribute('src')} missing alt attribute"
+
+def test_negative_path_unsupported_browser_and_missing_project_link(page: Page, base_url: str):
     """
-    Feature: Last updated timestamp
-    Scenario: Footer displays correct timestamp
+    Scenario: Negative path – Unsupported browser and missing project link
     """
-    page.goto("https://shaliniaiitd.github.io")
+    # Playwright cannot emulate IE11; we skip the browser check but ensure page loads
+    page.goto(base_url, wait_until="load")
+    # Graceful fallback message for unsupported browsers is not present; we check for its absence
+    fallback = page.locator("text=Your browser is not supported")
+    assert fallback.count() == 0, "Fallback message displayed for supported browser"
+
+    # Core content should still be rendered
+    for link_text in NAV_LINKS:
+        nav_link = page.get_by_role("link", name=link_text, exact=True)
+        expect(nav_link).to_be_visible()
+
+    # Projects section
+    projects_section = page.locator("#projects")
+    expect(projects_section).to_be_visible()
+    articles = projects_section.locator("article")
+    assert articles.count() > 0, "No project articles found"
+
+    # Check that any private GitHub repo link is hidden or replaced
+    private_links = articles.locator("a[href*='github.com'][data-private='true']")
+    assert private_links.count() == 0, "Private GitHub links are visible"
+
+    # Footer sticky on small screen
+    page.set_viewport_size({"width": 320, "height": 480})
     footer = page.locator("footer")
     expect(footer).to_be_visible()
-    timestamp = footer.locator("text=Last Updated")
-    expect(timestamp).to_be_visible()
-    # Basic check: timestamp contains a year
-    text = timestamp.inner_text()
-    assert any(str(year) in text for year in range(2020, 2030)), "Timestamp does not contain a year"
-
-def test_page_load_time(page: Page):
-    """
-    Feature: Homepage performance
-    Scenario: Page loads within acceptable time
-    """
-    start = time.time()
-    page.goto("https://shaliniaiitd.github.io")
-    load_time = time.time() - start
-    assert load_time < 2, f"Page load time {load_time:.2f}s exceeds 2 seconds"
-
-def test_no_console_errors(page: Page):
-    """
-    Feature: Accessibility compliance
-    General robustness check: No console errors
-    """
-    page.goto("https://shaliniaiitd.github.io")
-    errors = []
-    page.on("console", lambda msg: errors.append(msg))
-    # Wait a short period to allow console messages to appear
-    page.wait_for_timeout(2000)
-    assert not errors, f"Console errors found: {errors}"
+    # Verify footer is sticky by checking its position after scrolling
+    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+    footer_y = footer.bounding_box()["y"]
+    page.evaluate("window.scrollTo(0, 0)")
+    top_footer_y = footer.bounding_box()["y"]
+    assert top_footer_y == footer_y, "Footer is not sticky on small screen"

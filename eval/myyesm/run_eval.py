@@ -1,3 +1,9 @@
+'''It scores traces deterministically:
+
+What it checks: retrieval hits, context precision/recall, citations, fact and phrase matching, JSON validity, tool-call accuracy, latency, tokens, and the human-review gate.
+What it can't judge: whether an answer is faithful to its context, or whether a refusal was appropriate. Phrase matching can't tell a correct refusal worded differently from a wrong one.'''
+
+
 from __future__ import annotations
 
 import argparse

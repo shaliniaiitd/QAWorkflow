@@ -1,6 +1,7 @@
 mcp
 langgraph
 langchain-ollama
+langchain-groq
 chromadb
 langsmith
 python-dotenv
@@ -8,3 +9,7 @@ streamlit
 pandas
 fastapi
 uvicorn
+pytest
+playwright
+pytest-playwright
+deepeval

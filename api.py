@@ -4,7 +4,7 @@
 # browser and can't call Python functions directly -- it needs HTTP
 # endpoints. Streamlit didn't need this because Streamlit's Python code
 # runs server-side and renders its own UI; this is the actual structural
-# difference between the two (see the comparison in chat).
+# difference between the two.
 #
 # How to run:
 #   pip install fastapi uvicorn

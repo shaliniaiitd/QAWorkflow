@@ -642,25 +642,22 @@ def healing_agent(state: QAState) -> QAState:
             "healing_attempts": healing_attempts,
         }
 
-    prompt = f"""Repair the failing pytest-playwright script below using the actual pytest output.
+    target_url_match = re.search(
+        r"(?m)^\s*BASE_URL\s*=\s*['\"](https?://[^'\"]+)['\"]", original_script
+    )
+    target_url = target_url_match.group(1) if target_url_match else TARGET_APP_URL
+    page_snapshot = redact_pii(_capture_playwright_page_snapshot(target_url))
+    skill_path = PROJECT_DIR / "skills" / "playwright-test-healer.agent.md"
+    prompt = skill_path.read_text(encoding="utf-8")
+    replacements = {
+        "[[FAILURE_DIAGNOSIS]]": healing_proposal,
+        "[[FAILURE_LOG]]": execution_log[-12000:],
+        "[[PAGE_SNAPSHOT]]": page_snapshot,
+        "[[FAILED_SCRIPT]]": original_script,
+    }
+    for placeholder, value in replacements.items():
+        prompt = prompt.replace(placeholder, value)
 
-Failure diagnosis: {healing_proposal}
-
-Pytest output:
-{execution_log[-12000:]}
-
-Current script:
-{original_script}
-
-Constraints:
-- Return only a complete Python script, without markdown fences.
-- Preserve every test scenario and its intended assertions. Do not delete, skip,
-  weaken, or broadly catch failing assertions just to make the suite pass.
-- Make only a concrete mechanical correction supported by the failure output.
-- If the failure shows the requested feature is absent from the target application,
-  preserve the test and its assertion; do not pretend the application supports it.
-- Keep synchronous pytest-playwright conventions and the existing fixtures.
-"""
     try:
         candidate = _strip_code_fences(_llm_text(get_llm(), prompt, node_name="healing_agent"))
     except Exception as exc:
@@ -670,6 +667,9 @@ Constraints:
     if not _is_valid_script_content(candidate):
         candidate = ""
         healing_proposal += " No valid revised pytest script was produced."
+    elif candidate.strip() == original_script.strip():
+        candidate = ""
+        healing_proposal += " The Playwright healer found no evidence-supported change to propose."
 
     print(f"Diagnosis: {healing_proposal}")
     return {
@@ -678,6 +678,32 @@ Constraints:
         "healing_applied": False,
         "healing_attempts": healing_attempts,
     }
+
+
+def _capture_playwright_page_snapshot(url: str, timeout_ms: int = 15000) -> str:
+    """Capture current accessibility and visible-text evidence for healer diagnosis."""
+    from playwright.sync_api import sync_playwright
+
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            try:
+                page = browser.new_page()
+                response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                body = page.locator("body")
+                aria_snapshot = body.aria_snapshot()
+                visible_text = body.inner_text(timeout=3000)
+                return (
+                    f"URL: {page.url}\n"
+                    f"HTTP status: {response.status if response else 'unknown'}\n"
+                    f"Page title: {page.title()}\n"
+                    f"Accessibility snapshot:\n{aria_snapshot[:10000]}\n"
+                    f"Visible text:\n{visible_text[:5000]}"
+                )
+            finally:
+                browser.close()
+    except Exception as exc:
+        return f"Live Playwright snapshot unavailable for {url}: {type(exc).__name__}: {exc}"
 
 
 def apply_healing(state: QAState) -> QAState:
@@ -1159,109 +1185,23 @@ def _generate_grounded_playwright_script(
     node_name: str,
     syntax_feedback: str | None = None,
 ) -> str:
-    """Phase 2a codegen: same contract as _generate_playwright_script, but the
-    prompt is grounded in a real DOM scan instead of letting the model guess.
-
-    Two lessons folded in from the first real test of this prompt (see design
-    doc Section 9.1.2 for the full before/after analysis):
-    - Bot-domain status-code handling is given as literal, copy-pasteable
-      code rather than a prose rule -- prose instructions are not reliably
-      followed for a single specific edge case buried in a longer prompt.
-    - The model has hallucinated a nonexistent Playwright method
-      (`Locator.all_attribute_values`) and matched "Work" against "Frameworks"
-      via unqualified has_text substring matching -- both are now called out
-      explicitly as things to avoid.
-    """
+    """Generate a script using the checked-in DOM-grounding skill and live scan facts."""
     facts_summary = _format_page_facts(page_facts)
-    prompt = f"""Convert the following BDD Gherkin test cases into a pytest-playwright Python script.
+    skill_path = PROJECT_DIR / "skills" / "dom_grounding_prompt.md"
+    prompt = skill_path.read_text(encoding="utf-8")
+    replacements = {
+        "[[TARGET_APP_URL]]": TARGET_APP_URL,
+        "[[PAGE_FACTS_SUMMARY]]": facts_summary,
+        "[[BDD_CASES]]": bdd_cases,
+        "[[SYNTAX_FEEDBACK]]": (
+            f"The previous generated script failed Python syntax validation: {syntax_feedback}. "
+            "Regenerate the entire script with valid Python syntax and no trailing prose."
+            if syntax_feedback else ""
+        ),
+    }
+    for placeholder, value in replacements.items():
+        prompt = prompt.replace(placeholder, value)
 
-The target application is at: {TARGET_APP_URL}
-
-REAL PAGE STRUCTURE (scanned directly from the live page just now -- use this,
-do NOT invent selectors, nav text, or class names that aren't listed here):
-{facts_summary}
-
-Target-specific contract:
-- The brand is a separate header link, not an item in the primary navigation. Use its
-    scanned accessible name for the brand assertion; use only the scanned navigation list
-    inside the navigation landmark.
-- Project content is rendered as articles under `#projects`; use `#projects article`
-    and its observed headings rather than invented `.project-grid`, `.project-card`, or
-    `.tag` selectors.
-- Only test metadata keys shown as present above. Do not assume Open Graph tags exist.
-- Do not load axe-core or any other local/npm script unless its availability is
-    explicitly established. Use installed Playwright APIs and dependencies only.
-- Do not assert exact load-time thresholds unless the BDD scenario explicitly requires
-    one; page/network variability makes arbitrary timing assertions flaky.
-
-For checking external link status codes, use exactly this pattern (copy it as-is,
-do not paraphrase or simplify the bot-domain handling):
-```
-BOT_BLOCKING_DOMAINS = ("linkedin.com",)
-
-def is_healthy_status(url: str, status: int) -> bool:
-    if any(domain in url for domain in BOT_BLOCKING_DOMAINS):
-        return status in (200, 999)  # 999 = intentional anti-bot response, not broken
-    return status == 200
-```
-Use `is_healthy_status(url, status)` in every external-link assertion instead of a bare
-`status == 200` check.
-
-Playwright API correctness -- these are real, verified Playwright sync API methods:
-- To get an attribute from every element matched by a locator, loop over `locator.all()`
-  and call `.get_attribute("href")` on each element individually. Do NOT use
-  `locator.all_attribute_values(...)` -- this method does not exist in Playwright.
-- When filtering a locator by visible text with `has_text=`, always pass `exact=True`
-  unless you specifically want substring matching (e.g. `page.get_by_role("link", name="Work", exact=True)`).
-  Without `exact=True`, "Work" will also match "Frameworks" as a substring.
-- To assert a count is greater than zero (not an exact count), get the count as a plain
-  Python integer with `locator.count()` and use a normal `assert count > 0`. Do NOT invent
-  assertion-helper method names like `to_have_count_greater_than` -- if you are not
-  certain a Playwright assertion method exists exactly as named, use `.count()` plus a
-  plain assert instead of guessing at a fluent-assertion method name.
-- Elements can have an `aria-label` that differs from their visible text (e.g. a logo
-  link showing "SA" visually may have aria-label="Shalini Agarwal home"). The REAL PAGE
-  STRUCTURE above lists visible text only. If a `get_by_role(..., name=...)` lookup for
-  a nav/header element seems uncertain, prefer a CSS/text-content locator (e.g.
-  `page.locator("header").get_by_text("Shalini Agarwal")`) over guessing the exact
-  accessible name string.
-- When checking images for alt text, the correct accessibility check is whether the
-  `alt` ATTRIBUTE EXISTS (`img.get_attribute("alt") is not None`), not whether it is
-  non-empty. `alt=""` (present but empty) is the correct, deliberate WCAG pattern for
-  purely decorative images and must PASS. Only a genuinely MISSING alt attribute
-  (`get_attribute("alt")` returns `None`) is a real violation. Do not flag `alt=""` as
-  a failure -- that produces a false positive on sites that correctly mark decorative
-  images this way.
-- Most Playwright action/wait methods (`wait_for_load_state`, `goto`, `click`, `fill`,
-  `wait_for_selector`, etc.) return `None` on success. They signal failure by RAISING
-  an exception (e.g. a timeout error), not by returning a falsy value. NEVER wrap these
-  in `assert method_call(...)` -- `assert page.wait_for_load_state(...)` will fail even
-  on success, since `None` is falsy. Call these as plain statements; if the condition
-  isn't met in time, Playwright raises automatically and pytest already treats an
-  uncaught exception as a failure -- no extra assert is needed or correct. Only wrap a
-  call in `assert` when its documented return type is genuinely a boolean (e.g.
-  `locator.is_visible()`, `locator.is_checked()`).
-
-{f"The previous generated script failed Python syntax validation: {syntax_feedback}. Regenerate the entire script with valid Python syntax and no trailing prose." if syntax_feedback else ""}
-
-The script MUST:
-- Use the SYNCHRONOUS pytest-playwright API (NOT async/await, NOT playwright.async_api)
-- Use the built-in `page` fixture provided automatically by the pytest-playwright plugin
-- Follow pytest naming conventions (test_* functions), using plain `def`, never `async def`
-- Only reference navigation text, headings, class names, or links that appear in the
-  REAL PAGE STRUCTURE above. If a BDD scenario references something not confirmed to
-  exist on the page (e.g. a hypothetical "deleted repo" link or a "certificate" link
-  not seen above), write that test as a general robustness/negative check (e.g. "no
-  broken links found", "no console errors") rather than asserting a specific unverified
-  element is present
-- Use `from playwright.sync_api import expect` for assertions where appropriate
-- Include a short docstring on each test function mapping it back to its BDD scenario
-- Be ready to run as-is with: pytest <script_name> -v
-
-BDD Cases:
-{bdd_cases}
-
-Generate ONLY the complete Python script -- no explanations, no markdown code fences."""
     raw = _llm_text(get_llm(), prompt, node_name=node_name)
     return _strip_code_fences(raw)
 

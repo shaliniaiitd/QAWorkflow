@@ -47,4 +47,8 @@ Run the offline unit tests:
 
 ```bash
 python -m unittest discover -s eval/myyesm -p 'test_*.py'
+python -m unittest discover -s eval/qaworkflow -p "test_*.py"
+python eval/qaworkflow/run_suite.py --suite guardrails --run-id guardrails-before
+python eval/myyesm/dataset_requirements.py --tier release
+python eval/myyesm/sut_adapter.py --mode tools --prompt hardened --run-id tools-hardened-001 --score
 ```

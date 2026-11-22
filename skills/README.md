@@ -9,6 +9,7 @@ This project keeps reusable, repeatable behaviors in two layers:
 
 - `pii-redaction.skill.md` — redact personal identifiers before trace export or persistence
 - `qa-test-generation-checklist.skill.md` — generation checklist for Playwright tests and BDD handoff
+- `playwright-test-healer.agent.md` — evidence-first diagnosis and human-approved repair of failing Playwright tests
 - `review-rubric-validation.skill.md` — validation rubric for output quality and guardrail checks
 - `dom_grounding_prompt.md` — canonical DOM-grounding prompt pattern for live-page generation
 - `dom-grounded-generation.prompt.md` — agent-facing invocation of the same practical pattern

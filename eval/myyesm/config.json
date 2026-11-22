@@ -9,6 +9,10 @@
     "citation_recall": {"min": 0.8},
     "forbidden_phrase_case_rate": {"max": 0.0},
     "json_valid_rate": {"min": 1.0},
+    "json_match_rate": {"min": 1.0},
+    "tool_selection_accuracy": {"min": 0.8},
+    "tool_call_accuracy": {"min": 0.8},
+    "forbidden_tool_call_case_rate": {"max": 0.0},
     "manual_review_pending": {"max": 0.0}
   }
 }
