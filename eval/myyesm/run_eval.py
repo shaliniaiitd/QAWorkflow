@@ -19,6 +19,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.utils.guardrails import redact_pii
 
 EVAL_DIR = Path(__file__).resolve().parent
+if str(EVAL_DIR) not in sys.path:
+    sys.path.insert(0, str(EVAL_DIR))
+
+from stats import wilson_interval  # noqa: E402
 DATASET_PATH = EVAL_DIR / "cases.json"
 DOCUMENTS_PATH = EVAL_DIR / "documents.json"
 CONFIG_PATH = EVAL_DIR / "config.json"
@@ -103,6 +107,18 @@ def validate_dataset(dataset: dict[str, Any], documents: dict[str, Any]) -> None
         expected_facts = entry.get("expected_facts", [])
         if not isinstance(expected_facts, list) or any(not isinstance(fact, str) for fact in expected_facts):
             raise ValueError(f"{case_id}: expected_facts must be an array")
+        expected_calls = entry.get("expected_tool_calls")
+        if expected_calls is not None:
+            if not isinstance(expected_calls, list) or any(
+                not isinstance(call, dict)
+                or not isinstance(call.get("name"), str)
+                or not isinstance(call.get("arguments", {}), dict)
+                for call in expected_calls
+            ):
+                raise ValueError(f"{case_id}: expected_tool_calls must be a list of {{name, arguments}} objects")
+        forbidden_calls = entry.get("forbidden_tool_calls", [])
+        if not isinstance(forbidden_calls, list) or any(not isinstance(name, str) for name in forbidden_calls):
+            raise ValueError(f"{case_id}: forbidden_tool_calls must be a list of tool names")
         evidence = " ".join(documents_by_id[source_id]["content"] for source_id in source_ids)
         for fact in expected_facts:
             if not contains_phrase(evidence, fact):
@@ -140,6 +156,61 @@ def _json_matches(actual: Any, expected: Any) -> bool:
     return actual == expected
 
 
+def _args_match(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
+    """Every expected argument must be present in the actual call.
+
+    Strings match after normalisation. {"contains": [...]} matches when every phrase
+    appears in the actual string, for free-text arguments such as search queries.
+    """
+    for key, wanted in expected.items():
+        if key not in actual:
+            return False
+        got = actual[key]
+        if isinstance(wanted, dict) and "contains" in wanted:
+            if not isinstance(got, str) or not all(contains_phrase(got, phrase) for phrase in wanted["contains"]):
+                return False
+        elif isinstance(wanted, str) and isinstance(got, str):
+            if normalize(got) != normalize(wanted):
+                return False
+        elif got != wanted:
+            return False
+    return True
+
+
+def _score_tool_calls(expected: list[dict[str, Any]], actual: list[dict[str, Any]]) -> tuple[float, float]:
+    """Return (tool_selection_accuracy, tool_call_accuracy).
+
+    Selection: share of expected calls whose tool name was called. Accuracy: share whose
+    name and arguments both matched. An empty expectation means no tool should be called.
+    """
+    if not expected:
+        none_called = 1.0 if not actual else 0.0
+        return none_called, none_called
+    remaining = list(actual)
+    selected = 0
+    exact = 0
+    for wanted in expected:
+        wanted_args = wanted.get("arguments", {})
+        full_match = next(
+            (
+                index
+                for index, call in enumerate(remaining)
+                if call["name"] == wanted["name"] and _args_match(wanted_args, call.get("arguments") or {})
+            ),
+            None,
+        )
+        if full_match is not None:
+            selected += 1
+            exact += 1
+            remaining.pop(full_match)
+            continue
+        name_match = next((index for index, call in enumerate(remaining) if call["name"] == wanted["name"]), None)
+        if name_match is not None:
+            selected += 1
+            remaining.pop(name_match)
+    return selected / len(expected), exact / len(expected)
+
+
 def score_case(case: dict[str, Any], trace: dict[str, Any]) -> dict[str, Any]:
     answer = trace["answer"]
     expected_sources = set(case.get("expected_source_ids", []))
@@ -162,6 +233,9 @@ def score_case(case: dict[str, Any], trace: dict[str, Any]) -> dict[str, Any]:
         "json_valid": None,
         "json_matches_expected": None,
         "untrusted_context_injected": None,
+        "tool_selection_accuracy": None,
+        "tool_call_accuracy": None,
+        "forbidden_tool_call_hits": 0,
     }
 
     untrusted_context_id = case.get("untrusted_context_id")
@@ -194,6 +268,16 @@ def score_case(case: dict[str, Any], trace: dict[str, Any]) -> dict[str, Any]:
         else:
             metrics["json_valid"] = True
             metrics["json_matches_expected"] = _json_matches(parsed, case["expected_json"])
+
+    actual_calls = [
+        call for call in trace.get("tool_calls", []) if isinstance(call, dict) and isinstance(call.get("name"), str)
+    ]
+    if "expected_tool_calls" in case:
+        selection, accuracy = _score_tool_calls(case["expected_tool_calls"], actual_calls)
+        metrics["tool_selection_accuracy"] = selection
+        metrics["tool_call_accuracy"] = accuracy
+    forbidden_tools = set(case.get("forbidden_tool_calls", []))
+    metrics["forbidden_tool_call_hits"] = sum(1 for call in actual_calls if call["name"] in forbidden_tools)
 
     latency = trace.get("latency_ms")
     result = {
@@ -246,6 +330,10 @@ def _case_failures(result: dict[str, Any]) -> list[str]:
         failures.append("json_matches_expected")
     if metrics["untrusted_context_injected"] is False:
         failures.append("untrusted_context_not_injected")
+    if metrics["tool_call_accuracy"] is not None and metrics["tool_call_accuracy"] < 1.0:
+        failures.append("tool_call_accuracy")
+    if metrics["forbidden_tool_call_hits"]:
+        failures.append("forbidden_tool_call")
     return failures
 
 
@@ -273,7 +361,12 @@ def _aggregate(results: list[dict[str, Any]], expected_case_count: int, traces: 
     forbidden_case_rate = sum(bool(metric["forbidden_phrase_hits"]) for metric in metrics) / len(metrics) if metrics else None
     manual_pending = sum(result["manual_review_status"] == "pending" for result in results)
     review_failed = sum(result["manual_review_status"] == "fail" for result in results)
-    json_results = [metric["json_valid"] and metric["json_matches_expected"] for metric in metrics if metric["json_valid"] is not None]
+    json_valid_results = [bool(metric["json_valid"]) for metric in metrics if metric["json_valid"] is not None]
+    json_match_results = [
+        bool(metric["json_valid"] and metric["json_matches_expected"]) for metric in metrics if metric["json_valid"] is not None
+    ]
+    passed_cases = sum(1 for result in results if result["automatic_checks_passed"])
+    pass_low, pass_high = wilson_interval(passed_cases, len(results)) if results else (0.0, 1.0)
     latencies = [float(trace["latency_ms"]) for trace in traces if isinstance(trace.get("latency_ms"), (int, float)) and trace["latency_ms"] >= 0]
     costs = [float(trace["cost_usd"]) for trace in traces if isinstance(trace.get("cost_usd"), (int, float)) and trace["cost_usd"] >= 0]
     total_tokens = sum(int(trace.get("input_tokens", 0)) + int(trace.get("output_tokens", 0)) for trace in traces if isinstance(trace.get("input_tokens", 0), int) and isinstance(trace.get("output_tokens", 0), int))
@@ -288,7 +381,15 @@ def _aggregate(results: list[dict[str, Any]], expected_case_count: int, traces: 
         "required_phrase_coverage": _mean(values("required_phrase_coverage")),
         "citation_recall": _mean(values("citation_recall")),
         "forbidden_phrase_case_rate": forbidden_case_rate,
-        "json_valid_rate": _mean([float(valid) for valid in json_results]),
+        "json_valid_rate": _mean([float(valid) for valid in json_valid_results]),
+        "json_match_rate": _mean([float(match) for match in json_match_results]),
+        "tool_selection_accuracy": _mean(values("tool_selection_accuracy")),
+        "tool_call_accuracy": _mean(values("tool_call_accuracy")),
+        "forbidden_tool_call_case_rate": (
+            sum(bool(metric["forbidden_tool_call_hits"]) for metric in metrics) / len(metrics) if metrics else None
+        ),
+        "automatic_pass_rate": passed_cases / len(results) if results else None,
+        "automatic_pass_rate_ci95": [pass_low, pass_high],
         "manual_review_pending": manual_pending,
         "manual_review_failed": review_failed,
         "latency_p50_ms": _percentile(latencies, 0.50),
@@ -325,6 +426,14 @@ def _redact(value: Any) -> Any:
     return value
 
 
+def _format_pass_rate(aggregate: dict[str, Any]) -> str:
+    rate = aggregate.get("automatic_pass_rate")
+    low, high = aggregate.get("automatic_pass_rate_ci95") or (None, None)
+    if rate is None or low is None:
+        return "not measured"
+    return f"{rate:.0%} [{low:.0%}, {high:.0%}]"
+
+
 def _markdown_report(report: dict[str, Any]) -> str:
     lines = [
         f"# MyYesm evaluation run `{report['run_id']}`", "",
@@ -339,7 +448,7 @@ def _markdown_report(report: dict[str, Any]) -> str:
     ]
     for name, outcome in report["thresholds"].items():
         value = outcome["value"]
-        value_text = "not measured" if value is None else f"{value:.2%}" if isinstance(value, float) and name.endswith(("rate", "precision", "recall", "coverage")) else str(value)
+        value_text = "not measured" if value is None else f"{value:.2%}" if isinstance(value, float) and name.endswith(("rate", "precision", "recall", "coverage", "accuracy")) else str(value)
         requirement = next((outcome[key] for key in ("min", "max") if key in outcome), None)
         threshold_text = "—" if requirement is None else f">= {requirement:.2%}" if "min" in outcome else f"<= {requirement:.2%}"
         lines.append(f"| {name} | {value_text} | {threshold_text} | {outcome['status']} |")
@@ -347,7 +456,8 @@ def _markdown_report(report: dict[str, Any]) -> str:
         f"| Latency p50 | {report['aggregate']['latency_p50_ms']} ms |",
         f"| Latency p95 | {report['aggregate']['latency_p95_ms']} ms |",
         f"| Total cost | {report['aggregate']['cost_usd_total']} USD |",
-        f"| Total tokens | {report['aggregate']['tokens_total']} |", "",
+        f"| Total tokens | {report['aggregate']['tokens_total']} |",
+        f"| Automatic case pass rate (95% Wilson CI) | {_format_pass_rate(report['aggregate'])} |", "",
         "## Per-case results", "", "| Case | Scenario | Risk | Retrieval | Fact coverage | Citations | Auto checks | Human review |",
         "|---|---|---|---:|---:|---:|---|---|"])
     for result in report["results"]:
@@ -376,10 +486,16 @@ def _markdown_report(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def run_evaluation(run_file: Path, run_id: str | None = None, runs_dir: Path = RUNS_DIR) -> tuple[dict[str, Any], Path]:
-    dataset = load_json(DATASET_PATH)
+def run_evaluation(
+    run_file: Path,
+    run_id: str | None = None,
+    runs_dir: Path = RUNS_DIR,
+    dataset_path: Path = DATASET_PATH,
+    config_path: Path = CONFIG_PATH,
+) -> tuple[dict[str, Any], Path]:
+    dataset = load_json(dataset_path)
     documents = load_json(DOCUMENTS_PATH)
-    config = load_json(CONFIG_PATH)
+    config = load_json(config_path)
     validate_dataset(dataset, documents)
     entries = dataset["entries"]
     cases_by_id = {entry["id"]: entry for entry in entries}
@@ -438,9 +554,9 @@ def run_evaluation(run_file: Path, run_id: str | None = None, runs_dir: Path = R
         "created_at": datetime.now(timezone.utc).isoformat(),
         "dataset_name": dataset.get("dataset_name", "unnamed"),
         "dataset_version": dataset.get("version", "unknown"),
-        "dataset_sha256": hashlib.sha256(DATASET_PATH.read_bytes()).hexdigest(),
+        "dataset_sha256": hashlib.sha256(dataset_path.read_bytes()).hexdigest(),
         "documents_sha256": hashlib.sha256(DOCUMENTS_PATH.read_bytes()).hexdigest(),
-        "config_sha256": hashlib.sha256(CONFIG_PATH.read_bytes()).hexdigest(),
+        "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
         "evaluator_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "run_file_sha256": hashlib.sha256(run_file.read_bytes()).hexdigest(),
         "system_variants": {field: sorted({trace[field] for trace in traces if isinstance(trace.get(field), str) and trace[field]}) for field in ("model_id", "prompt_version", "retriever_version")},
@@ -461,9 +577,11 @@ def main() -> int:
     parser.add_argument("--run-file", type=Path, required=True, help="JSONL file with one system trace per case")
     parser.add_argument("--run-id", help="Optional stable artifact directory name")
     parser.add_argument("--runs-dir", type=Path, default=RUNS_DIR, help="Artifact output directory")
+    parser.add_argument("--dataset", type=Path, default=DATASET_PATH, help="Cases file to score against")
+    parser.add_argument("--config", type=Path, default=CONFIG_PATH, help="Thresholds file")
     args = parser.parse_args()
     try:
-        report, output_dir = run_evaluation(args.run_file, args.run_id, args.runs_dir)
+        report, output_dir = run_evaluation(args.run_file, args.run_id, args.runs_dir, args.dataset, args.config)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     print(f"Run {report['run_id']}: {report['status']}")

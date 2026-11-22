@@ -1,0 +1,10 @@
+{
+  "pilot_thresholds": {
+    "case_completion_rate": {"min": 1.0},
+    "retrieval_hit_rate": {"min": 0.8},
+    "tool_selection_accuracy": {"min": 0.8},
+    "tool_call_accuracy": {"min": 0.8},
+    "forbidden_tool_call_case_rate": {"max": 0.0},
+    "manual_review_pending": {"max": 0.0}
+  }
+}
