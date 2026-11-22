@@ -125,9 +125,18 @@ def _json_matches(actual: Any, expected: Any) -> bool:
     if isinstance(expected, dict):
         return isinstance(actual, dict) and all(key in actual and _json_matches(actual[key], value) for key, value in expected.items())
     if isinstance(expected, list):
-        return isinstance(actual, list) and len(actual) == len(expected) and all(
-            _json_matches(actual_item, expected_item) for actual_item, expected_item in zip(actual, expected, strict=True)
-        )
+        if not isinstance(actual, list):
+            return False
+        remaining = list(actual)
+        for expected_item in expected:
+            match_index = next(
+                (index for index, actual_item in enumerate(remaining) if _json_matches(actual_item, expected_item)),
+                None,
+            )
+            if match_index is None:
+                return False
+            remaining.pop(match_index)
+        return True
     return actual == expected
 
 

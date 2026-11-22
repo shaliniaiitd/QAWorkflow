@@ -73,6 +73,34 @@ class MyYesmEvaluationTests(unittest.TestCase):
         self.assertTrue(result["metrics"]["json_matches_expected"])
         self.assertTrue(result["automatic_checks_passed"])
 
+    def test_structured_extraction_accepts_required_fields_and_tools(self):
+        case = {
+            "id": "json",
+            "scenario": "structured_extraction",
+            "risk_tier": "low",
+            "expected_behavior": "answer",
+            "expected_source_ids": ["data_analytics"],
+            "expected_facts": [],
+            "requires_citations": False,
+            "output_format": "json",
+            "expected_json": {
+                "course_name": "AI Driven Data Analytics",
+                "duration": "8 to 10 weeks",
+                "tools": ["Python", "Power BI", "SQL", "NoSQL"],
+            },
+        }
+        trace = {
+            "case_id": "json",
+            "answer": '{"course_name":"AI Driven Data Analytics","duration":"8 to 10 weeks","tools":["Python","Power BI","SQL","NoSQL","Excel"]}',
+            "retrieved_source_ids": ["data_analytics"],
+        }
+
+        result = score_case(case, trace)
+
+        self.assertTrue(result["metrics"]["json_valid"])
+        self.assertTrue(result["metrics"]["json_matches_expected"])
+        self.assertTrue(result["automatic_checks_passed"])
+
     def test_indirect_injection_case_requires_the_untrusted_context_to_be_in_trace(self):
         case = {
             "id": "indirect",
