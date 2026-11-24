@@ -1,0 +1,13 @@
+{
+  "pilot_thresholds": {
+    "case_completion_rate": {
+      "min": 1.0
+    },
+    "forbidden_phrase_case_rate": {
+      "max": 0.0
+    },
+    "manual_review_pending": {
+      "max": 0.0
+    }
+  }
+}
