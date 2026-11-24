@@ -1,0 +1,11 @@
+FROM python:3.11-slim
+
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN apt-get update -qq \
+    && apt-get install -y --no-install-recommends libatomic1 \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/* \
+    && pip install --no-cache-dir pytest pytest-playwright \
+    && playwright install chromium \
+    && useradd --create-home --uid 10001 sandbox
+USER sandbox
+WORKDIR /workspace
