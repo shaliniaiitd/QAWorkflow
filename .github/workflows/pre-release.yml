@@ -1,0 +1,48 @@
+﻿name: Pre-release QA gates
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "api.py"
+      - "src/**"
+      - "prompts/**"
+      - "eval/**"
+      - "tests/api/**"
+      - "tests/ui/**"
+      - "requirements.txt"
+      - ".github/workflows/pre-release.yml"
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    name: API, browser, and deterministic AI safety gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+      - run: python -m playwright install --with-deps chromium
+      - name: API regressions
+        run: python -m pytest tests/api -q
+      - name: Python POM browser regressions
+        run: python -m pytest tests/ui -q
+      - name: Pre-release input guardrail evaluation
+        run: python eval/qaworkflow/run_suite.py --suite guardrails --run-id ci-${{ github.run_id }}
+      - name: Upload evaluation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pre-release-evaluations
+          path: eval/qaworkflow/runs/ci-${{ github.run_id }}.json
+          if-no-files-found: ignore
